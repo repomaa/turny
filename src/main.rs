@@ -25,6 +25,10 @@ use hal::{Delay, SpidevBus, SysfsPin};
 use mfrc522::comm::blocking::spi::SpiInterface;
 use mfrc522::Mfrc522;
 
+// Spotify Connect integration
+mod spotify_connect;
+use spotify_connect::SpotifyConnect;
+
 const BUTTON_PIN: u8 = 27;
 const LED_PIN: u8 = 22;  // Matches reference.py exactly - same as MFRC522 RST pin
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
@@ -183,6 +187,7 @@ pub struct Turny {
     config: TurnyConfig,
     state: Arc<Mutex<TurnyState>>,
     spotify: AuthCodeSpotify,
+    spotify_connect: SpotifyConnect,
     button: InputPin,
     led: OutputPin,
     rfid_reader: Box<dyn RfidReader + Send>,
@@ -219,10 +224,20 @@ impl Turny {
                 .context("Failed to initialize MFRC522 RFID reader")?
         );
 
+        // Initialize Spotify Connect
+        let spotify_connect = SpotifyConnect::new(
+            "Turny Speaker".to_string(),
+            config.device_id.clone(),
+            config.client_id.clone(),
+            config.client_secret.clone(),
+            config.redirect_uri.clone(),
+        );
+
         Ok(Self {
             config,
             state: Arc::new(Mutex::new(TurnyState::default())),
             spotify,
+            spotify_connect,
             button,
             led,
             rfid_reader,
@@ -230,9 +245,22 @@ impl Turny {
     }
 
     pub async fn initialize_spotify(&mut self) -> Result<()> {
-        // This would need proper OAuth flow implementation
-        // For now, assume we have a valid token
-        info!("Initializing Spotify client...");
+        // Check if we have valid authentication
+        if !self.spotify_connect.has_valid_token() {
+            warn!("No valid Spotify authentication found!");
+            warn!("Please authenticate using OAuth. Visit this URL:");
+            warn!("{}", self.get_oauth_url());
+            warn!("After authentication, call authenticate_with_code() with the authorization code");
+            return Err(anyhow::anyhow!("Authentication required before initializing Spotify"));
+        }
+        
+        // Initialize Spotify Connect (librespot) with existing token
+        info!("Initializing Spotify Connect with existing authentication...");
+        self.spotify_connect.initialize().await?;
+        self.spotify_connect.start().await?;
+        
+        // Initialize Spotify Web API client
+        info!("Initializing Spotify Web API client...");
         
         // Set initial playback state
         if let Err(e) = self.spotify.pause_playback(Some(&self.config.device_id)).await {
@@ -307,28 +335,112 @@ impl Turny {
         false
     }
 
-    async fn restart_spotifyd(&self) -> bool {
-        info!("Restarting spotifyd...");
+    async fn restart_spotify_connect(&mut self) -> bool {
+        info!("Restarting Spotify Connect...");
         
-        match Command::new("systemctl")
-            .args(&["--user", "restart", "spotifyd"])
-            .output()
-        {
-            Ok(output) => {
-                if output.status.success() {
-                    sleep(Duration::from_secs(5)).await;
-                    info!("Spotifyd restarted");
-                    true
-                } else {
-                    error!("Failed to restart spotifyd: {}", String::from_utf8_lossy(&output.stderr));
-                    false
-                }
+        match self.spotify_connect.restart().await {
+            Ok(()) => {
+                info!("Spotify Connect restarted successfully");
+                true
             }
             Err(e) => {
-                error!("Failed to restart spotifyd: {}", e);
+                error!("Failed to restart Spotify Connect: {}", e);
                 false
             }
         }
+    }
+
+    pub fn get_oauth_url(&self) -> String {
+        self.spotify_connect.get_oauth_url()
+    }
+
+    pub async fn authenticate_with_code(&mut self, code: &str) -> Result<()> {
+        info!("Authenticating with OAuth code...");
+        
+        let (access_token, refresh_token) = self.spotify_connect.exchange_code_for_token(code).await
+            .context("Failed to exchange code for token")?;
+        
+        info!("OAuth tokens obtained successfully");
+        
+        // Initialize SpotifyConnect with the tokens
+        self.spotify_connect.initialize_with_token(access_token, Some(refresh_token)).await
+            .context("Failed to initialize Spotify Connect with tokens")?;
+        
+        // Start the Spotify Connect service
+        self.spotify_connect.start().await
+            .context("Failed to start Spotify Connect service")?;
+        
+        info!("Spotify Connect authenticated and started");
+        Ok(())
+    }
+
+    pub async fn refresh_authentication(&mut self) -> Result<()> {
+        info!("Refreshing authentication...");
+        
+        let _new_access_token = self.spotify_connect.refresh_access_token().await
+            .context("Failed to refresh access token")?;
+        
+        info!("Access token refreshed successfully");
+        
+        // Restart SpotifyConnect with new token
+        self.restart_spotify_connect().await;
+        
+        Ok(())
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        self.spotify_connect.has_valid_token() && self.spotify_connect.is_initialized()
+    }
+
+    pub async fn ensure_authenticated(&mut self) -> Result<()> {
+        if !self.is_authenticated() {
+            let oauth_url = self.get_oauth_url();
+            error!("Authentication required! Please visit: {}", oauth_url);
+            return Err(anyhow::anyhow!("Authentication required. Visit the OAuth URL to authenticate."));
+        }
+        Ok(())
+    }
+
+    /// Helper function for development/testing - starts a simple HTTP server to handle OAuth callback
+    pub async fn start_oauth_server(&mut self) -> Result<()> {
+        use std::net::TcpListener;
+        use std::thread;
+        use std::sync::mpsc;
+
+        info!("Starting OAuth authentication flow...");
+        info!("Visit this URL to authenticate: {}", self.get_oauth_url());
+
+        let (tx, rx) = mpsc::channel();
+        
+        // Start HTTP server in a separate thread
+        thread::spawn(move || {
+            let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
+            info!("OAuth callback server listening on http://127.0.0.1:8080");
+            
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => {
+                        if let Some(code) = handle_oauth_callback(stream) {
+                            tx.send(code).unwrap();
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        error!("OAuth server error: {}", e);
+                    }
+                }
+            }
+        });
+
+        // Wait for OAuth callback
+        info!("Waiting for OAuth callback...");
+        let code = rx.recv().map_err(|e| anyhow::anyhow!("Failed to receive OAuth code: {}", e))?;
+        
+        // Exchange code for token
+        self.authenticate_with_code(&code).await?;
+        
+        info!("OAuth authentication completed successfully!");
+        Ok(())
     }
 
     async fn manual_reset(&mut self) -> Result<()> {
@@ -345,8 +457,8 @@ impl Turny {
             error!("Error pausing during reset: {}", e);
         }
 
-        // Restart spotifyd
-        if self.restart_spotifyd().await {
+        // Restart Spotify Connect
+        if self.restart_spotify_connect().await {
             // Success confirmation - slow blink
             self.blink_led(Duration::from_millis(500), Duration::from_millis(500), 3).await;
         } else {
@@ -421,8 +533,25 @@ impl Turny {
     }
 
     pub async fn run(&mut self) -> Result<()> {
+        // Check authentication status
+        if !self.is_authenticated() {
+            warn!("Spotify authentication required!");
+            warn!("Please visit: {}", self.get_oauth_url());
+            warn!("After authentication, restart the application");
+            
+            // Show authentication required pattern - fast blinking
+            self.blink_led(Duration::from_millis(100), Duration::from_millis(100), 20).await;
+            
+            return Err(anyhow::anyhow!("Authentication required. Please authenticate via OAuth and restart."));
+        }
+
         // Initialize Spotify
-        self.initialize_spotify().await?;
+        if let Err(e) = self.initialize_spotify().await {
+            error!("Failed to initialize Spotify: {}", e);
+            // Show error pattern - slow blinking
+            self.blink_led(Duration::from_millis(1000), Duration::from_millis(1000), 5).await;
+            return Err(e);
+        }
 
         // Startup indication
         sleep(Duration::from_secs(1)).await;
@@ -470,12 +599,12 @@ impl Turny {
                     drop(state);
                     
                     if !self.check_heartbeat().await {
-                        error!("Heartbeat failed, attempting to restart spotifyd...");
-                        if self.restart_spotifyd().await {
+                        error!("Heartbeat failed, attempting to restart Spotify Connect...");
+                        if self.restart_spotify_connect().await {
                             self.reset_state();
                             self.led.set_low();
                         } else {
-                            error!("Failed to restart spotifyd, continuing...");
+                            error!("Failed to restart Spotify Connect, continuing...");
                         }
                     }
                 }
@@ -524,6 +653,59 @@ impl Turny {
 
 }
 
+fn handle_oauth_callback(mut stream: std::net::TcpStream) -> Option<String> {
+    use std::io::{Read, Write};
+    
+    let mut buffer = [0; 1024];
+    if let Err(e) = stream.read(&mut buffer) {
+        error!("Failed to read OAuth callback: {}", e);
+        return None;
+    }
+    
+    let request = String::from_utf8_lossy(&buffer[..]);
+    info!("OAuth callback received: {}", request.lines().next().unwrap_or(""));
+    
+    // Extract authorization code from URL
+    let code = if let Some(line) = request.lines().next() {
+        if line.starts_with("GET /?code=") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let url_part = parts[1];
+                if let Some(code_start) = url_part.find("code=") {
+                    let code_part = &url_part[code_start + 5..];
+                    let code_end = code_part.find('&').unwrap_or(code_part.len());
+                    Some(code_part[..code_end].to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    
+    // Send response
+    let response = if code.is_some() {
+        "HTTP/1.1 200 OK\r\n\r\n<html><body><h1>Authorization successful!</h1><p>You can close this window and return to the application.</p></body></html>"
+    } else {
+        "HTTP/1.1 400 Bad Request\r\n\r\n<html><body><h1>Authorization failed!</h1><p>No authorization code received.</p></body></html>"
+    };
+    
+    if let Err(e) = stream.write(response.as_bytes()) {
+        error!("Failed to write OAuth response: {}", e);
+    }
+    
+    if let Err(e) = stream.flush() {
+        error!("Failed to flush OAuth response: {}", e);
+    }
+    
+    code
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
@@ -532,6 +714,15 @@ async fn main() -> Result<()> {
     
     let config = TurnyConfig::default();
     let mut turny = Turny::new(config).await?;
+    
+    // Check if authentication is required
+    if !turny.is_authenticated() {
+        info!("Authentication required. Starting OAuth flow...");
+        if let Err(e) = turny.start_oauth_server().await {
+            error!("OAuth authentication failed: {}", e);
+            return Err(e);
+        }
+    }
     
     // Run the main loop
     turny.run().await?;

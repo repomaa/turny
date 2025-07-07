@@ -46,3 +46,14 @@ base64 = "0.22"
 
 # Futures utilities
 futures = "0.3"
+
+# URL encoding
+urlencoding = "2.1"
+
+# Librespot - Spotify Connect integration
+librespot = { version = "0.6", features = ["alsa-backend"] }
+librespot-core = "0.6"
+librespot-connect = "0.6"
+librespot-playback = "0.6"
+librespot-discovery = "0.6"
+librespot-oauth = "0.6"
