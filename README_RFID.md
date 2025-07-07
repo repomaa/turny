@@ -100,7 +100,7 @@ pub struct Mfrc522RfidReader {
 impl Mfrc522RfidReader {
     pub fn new() -> Result<Self> {
         let mut delay = Delay;
-        
+
         // Initialize SPI
         let mut spi = SpidevBus::open("/dev/spidev0.0")
             .context("Failed to open SPI device")?;
@@ -114,27 +114,27 @@ impl Mfrc522RfidReader {
         // Setup chip select pin (GPIO22)
         let pin = SysfsPin::new(22);
         pin.export().context("Failed to export RFID CS pin")?;
-        
+
         // Wait for pin to be exported
         while !pin.is_exported() {}
         delay.delay_ms(500u32);
-        
+
         let pin = pin.into_output_pin(embedded_hal::digital::PinState::High)
             .context("Failed to set RFID CS pin as output")?;
 
         // Create SPI device
         let spi = ExclusiveDevice::new(spi, pin, Delay)?;
         let itf = SpiInterface::new(spi);
-        
+
         // Initialize MFRC522
         let mfrc522 = Mfrc522::new(itf).init()
             .map_err(|e| anyhow::anyhow!("Failed to initialize RFID reader: {:?}", e))?;
 
         let version = mfrc522.version()
             .map_err(|e| anyhow::anyhow!("Failed to read MFRC522 version: {:?}", e))?;
-        
+
         info!("MFRC522 initialized successfully, version: 0x{:x}", version);
-        
+
         Ok(Self { mfrc522 })
     }
 }
@@ -151,12 +151,12 @@ impl RfidReader for Mfrc522RfidReader {
                             .map(|b| format!("{:02x}", b))
                             .collect::<Vec<_>>()
                             .join("");
-                        
+
                         info!("RFID card detected: {}", uid_string);
-                        
+
                         // Halt the card to prevent repeated reads
                         let _ = self.mfrc522.hlta();
-                        
+
                         Some(uid_string)
                     }
                     Err(_) => None,
@@ -165,7 +165,7 @@ impl RfidReader for Mfrc522RfidReader {
             Err(_) => None,
         }
     }
-    
+
     fn is_available(&self) -> bool {
         // Check if we can read the version register
         self.mfrc522.version().is_ok()
@@ -187,13 +187,13 @@ Add your RFID card IDs to the playlist mapping in `TurnyConfig`:
 impl Default for TurnyConfig {
     fn default() -> Self {
         let mut playlist_map = HashMap::new();
-        
+
         // Add your card IDs here (get them from the logs when cards are detected)
         playlist_map.insert(
             "your_card_id_here".to_string(),
             "spotify:playlist:your_playlist_id".to_string(),
         );
-        
+
         // ... rest of implementation
     }
 }
@@ -258,12 +258,12 @@ You can extend the `RfidReader` trait to add more sophisticated card reading:
 pub trait RfidReader {
     fn read_card_id(&mut self) -> Option<String>;
     fn is_available(&self) -> bool;
-    
+
     // Optional: Add methods for writing to cards
     fn write_card_data(&mut self, data: &[u8]) -> Result<()> {
         Err(anyhow::anyhow!("Write not supported"))
     }
-    
+
     // Optional: Add authentication support
     fn authenticate_card(&mut self, key: &[u8]) -> Result<()> {
         Err(anyhow::anyhow!("Authentication not supported"))

@@ -1,0 +1,355 @@
+use anyhow::Result;
+use std::sync::{Arc, Mutex};
+
+/// Application state for the Turny music player
+#[derive(Debug, Clone)]
+pub struct TurnyState {
+    /// Currently playing RFID card ID
+    pub current_id: Option<String>,
+    /// Current Spotify context URI (playlist, album, etc.)
+    pub context_uri: Option<String>,
+    /// Whether music is currently playing
+    pub is_playing: bool,
+    /// Count of consecutive card absences (for auto-pause)
+    pub absence_count: u32,
+}
+
+impl Default for TurnyState {
+    fn default() -> Self {
+        Self {
+            current_id: None,
+            context_uri: None,
+            is_playing: false,
+            absence_count: 0,
+        }
+    }
+}
+
+impl TurnyState {
+    /// Create a new state instance
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Reset the state to default values
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Set the current card ID and context
+    pub fn set_current_card(&mut self, card_id: String, context_uri: String) {
+        self.current_id = Some(card_id);
+        self.context_uri = Some(context_uri);
+        self.absence_count = 0; // Reset absence count when card is present
+    }
+
+
+
+    /// Set the playback state
+    pub fn set_playing(&mut self, is_playing: bool) {
+        self.is_playing = is_playing;
+    }
+
+
+
+    /// Start a button press (simplified - just reset action handled flag)
+    pub fn start_button_press(&mut self) {
+        // Button press timing is now handled directly by the GPIO layer
+        // This method is kept for API compatibility
+    }
+
+    /// Increment the absence count
+    pub fn increment_absence_count(&mut self) {
+        self.absence_count = self.absence_count.saturating_add(1);
+    }
+
+    /// Reset the absence count
+    pub fn reset_absence_count(&mut self) {
+        self.absence_count = 0;
+    }
+
+    /// Check if the absence count exceeds the threshold
+    pub fn should_auto_pause(&self, threshold: u32) -> bool {
+        self.absence_count >= threshold
+    }
+
+
+
+    /// Get a summary of the current state
+    pub fn summary(&self) -> String {
+        format!(
+            "State: card={}, context={}, playing={}, absences={}",
+            self.current_id.as_deref().unwrap_or("none"),
+            self.context_uri.as_deref().unwrap_or("none"),
+            self.is_playing,
+            self.absence_count
+        )
+    }
+}
+
+/// Thread-safe state manager for the Turny application
+#[derive(Debug, Clone)]
+pub struct StateManager {
+    state: Arc<Mutex<TurnyState>>,
+}
+
+impl StateManager {
+    /// Create a new state manager
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(TurnyState::new())),
+        }
+    }
+
+
+
+    /// Execute a closure with read access to the state
+    pub fn with_state<T, F>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&TurnyState) -> T,
+    {
+        let state = self.state.lock().map_err(|e| {
+            anyhow::anyhow!("Failed to acquire state lock for reading: {}", e)
+        })?;
+        Ok(f(&*state))
+    }
+
+    /// Execute a closure with write access to the state
+    pub fn with_state_mut<T, F>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut TurnyState) -> T,
+    {
+        let mut state = self.state.lock().map_err(|e| {
+            anyhow::anyhow!("Failed to acquire state lock for writing: {}", e)
+        })?;
+        Ok(f(&mut *state))
+    }
+
+
+
+    /// Reset the state to default values
+    pub fn reset_state(&self) -> Result<()> {
+        self.with_state_mut(|state| state.reset())
+    }
+
+    /// Set the current card and context
+    pub fn set_current_card(&self, card_id: String, context_uri: String) -> Result<()> {
+        self.with_state_mut(|state| {
+            state.set_current_card(card_id, context_uri);
+        })
+    }
+
+
+
+    /// Set the playback state
+    pub fn set_playing(&self, is_playing: bool) -> Result<()> {
+        self.with_state_mut(|state| {
+            state.set_playing(is_playing);
+        })
+    }
+
+
+
+    /// Start a button press
+    pub fn start_button_press(&self) -> Result<()> {
+        self.with_state_mut(|state| {
+            state.start_button_press();
+        })
+    }
+
+
+
+    /// Increment the absence count
+    pub fn increment_absence_count(&self) -> Result<()> {
+        self.with_state_mut(|state| {
+            state.increment_absence_count();
+        })
+    }
+
+    /// Reset the absence count
+    pub fn reset_absence_count(&self) -> Result<()> {
+        self.with_state_mut(|state| {
+            state.reset_absence_count();
+        })
+    }
+
+    /// Check if should auto-pause based on absence count
+    pub fn should_auto_pause(&self, threshold: u32) -> Result<bool> {
+        self.with_state(|state| {
+            state.should_auto_pause(threshold)
+        })
+    }
+
+
+
+    /// Get a summary of the current state
+    pub fn get_summary(&self) -> Result<String> {
+        self.with_state(|state| {
+            state.summary()
+        })
+    }
+}
+
+impl Default for StateManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_turny_state_creation() {
+        let state = TurnyState::new();
+        assert!(state.current_id.is_none());
+        assert!(state.context_uri.is_none());
+        assert!(!state.is_playing);
+        assert_eq!(state.absence_count, 0);
+    }
+
+    #[test]
+    fn test_state_card_management() {
+        let mut state = TurnyState::new();
+        
+        // Set current card
+        state.set_current_card("card123".to_string(), "spotify:playlist:test".to_string());
+        assert_eq!(state.current_id, Some("card123".to_string()));
+        assert_eq!(state.context_uri, Some("spotify:playlist:test".to_string()));
+        assert_eq!(state.absence_count, 0);
+    }
+
+    #[test]
+    fn test_state_playback_management() {
+        let mut state = TurnyState::new();
+        
+        assert!(!state.is_playing);
+        state.set_playing(true);
+        assert!(state.is_playing);
+        state.set_playing(false);
+        assert!(!state.is_playing);
+    }
+
+    #[test]
+    fn test_state_button_press_management() {
+        let mut state = TurnyState::new();
+        
+        // Start button press (simplified)
+        state.start_button_press();
+        // Button press timing is now handled by GPIO layer
+        // This test just verifies the method exists for API compatibility
+    }
+
+    #[test]
+    fn test_state_absence_count() {
+        let mut state = TurnyState::new();
+        
+        assert_eq!(state.absence_count, 0);
+        assert!(!state.should_auto_pause(3));
+        
+        state.increment_absence_count();
+        assert_eq!(state.absence_count, 1);
+        
+        state.increment_absence_count();
+        state.increment_absence_count();
+        assert_eq!(state.absence_count, 3);
+        assert!(state.should_auto_pause(3));
+        
+        state.reset_absence_count();
+        assert_eq!(state.absence_count, 0);
+    }
+
+
+
+    #[test]
+    fn test_state_reset() {
+        let mut state = TurnyState::new();
+        
+        // Modify state
+        state.set_current_card("card123".to_string(), "playlist123".to_string());
+        state.set_playing(true);
+        state.increment_absence_count();
+        state.start_button_press();
+        
+        // Reset state
+        state.reset();
+        
+        // Check all values are back to default
+        assert!(state.current_id.is_none());
+        assert!(state.context_uri.is_none());
+        assert!(!state.is_playing);
+        assert_eq!(state.absence_count, 0);
+    }
+
+    #[test]
+    fn test_state_summary() {
+        let mut state = TurnyState::new();
+        state.set_current_card("card123".to_string(), "playlist123".to_string());
+        state.set_playing(true);
+        state.increment_absence_count();
+        
+        let summary = state.summary();
+        assert!(summary.contains("card=card123"));
+        assert!(summary.contains("context=playlist123"));
+        assert!(summary.contains("playing=true"));
+        assert!(summary.contains("absences=1"));
+    }
+
+    #[test]
+    fn test_state_manager_creation() {
+        let manager = StateManager::new();
+        let summary = manager.get_summary().unwrap();
+        assert!(summary.contains("card=none"));
+        assert!(summary.contains("playing=false"));
+    }
+
+    #[test]
+    fn test_state_manager_thread_safety() {
+        let manager = StateManager::new();
+        
+        // Test concurrent access
+        let manager_clone = manager.clone();
+        let handle = std::thread::spawn(move || {
+            manager_clone.set_playing(true).unwrap();
+        });
+        
+        manager.set_current_card("card123".to_string(), "playlist123".to_string()).unwrap();
+        handle.join().unwrap();
+        
+        let summary = manager.get_summary().unwrap();
+        assert!(summary.contains("card=card123"));
+        assert!(summary.contains("playing=true"));
+    }
+
+    #[test]
+    fn test_state_manager_operations() {
+        let manager = StateManager::new();
+        
+        // Test card management
+        manager.set_current_card("card123".to_string(), "playlist123".to_string()).unwrap();
+        let summary = manager.get_summary().unwrap();
+        assert!(summary.contains("card=card123"));
+        
+        // Test playback management
+        manager.set_playing(true).unwrap();
+        let summary = manager.get_summary().unwrap();
+        assert!(summary.contains("playing=true"));
+        
+        // Test absence count
+        manager.increment_absence_count().unwrap();
+        assert!(manager.should_auto_pause(1).unwrap());
+        
+        manager.reset_absence_count().unwrap();
+        assert!(!manager.should_auto_pause(1).unwrap());
+        
+        // Test button press (simplified)
+        manager.start_button_press().unwrap();
+        
+        // Test reset
+        manager.reset_state().unwrap();
+        let summary = manager.get_summary().unwrap();
+        assert!(summary.contains("card=none"));
+        assert!(summary.contains("playing=false"));
+    }
+}

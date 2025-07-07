@@ -20,11 +20,6 @@ use log::info;
 
 pub struct SpotifyConnect {
     device_name: String,
-    #[allow(dead_code)]
-    device_id: String,
-    client_id: String,
-    client_secret: String,
-    redirect_uri: String,
     access_token: Option<String>,
     refresh_token: Option<String>,
     _session: Option<Session>,
@@ -34,17 +29,9 @@ pub struct SpotifyConnect {
 impl SpotifyConnect {
     pub fn new(
         device_name: String,
-        device_id: String,
-        client_id: String,
-        client_secret: String,
-        redirect_uri: String,
     ) -> Self {
         Self {
             device_name,
-            device_id,
-            client_id,
-            client_secret,
-            redirect_uri,
             access_token: None,
             refresh_token: None,
             _session: None,
@@ -178,103 +165,12 @@ impl SpotifyConnect {
         self._session.is_some()
     }
 
-    pub fn get_oauth_url(&self) -> String {
-        let scopes = vec![
-            "user-read-playback-state",
-            "user-modify-playback-state",
-            "user-read-currently-playing",
-            "streaming",
-        ];
-        
-        let scope_string = scopes.join(" ");
-        
-        format!(
-            "https://accounts.spotify.com/authorize?client_id={}&response_type=code&redirect_uri={}&scope={}",
-            self.client_id,
-            urlencoding::encode(&self.redirect_uri),
-            urlencoding::encode(&scope_string)
-        )
+    /// Get the current session for use with other librespot components
+    pub fn get_session(&self) -> Option<&Session> {
+        self._session.as_ref()
     }
 
-    pub async fn exchange_code_for_token(&mut self, code: &str) -> Result<(String, String)> {
-        let token_url = "https://accounts.spotify.com/api/token";
-        
-        let params = [
-            ("grant_type", "authorization_code"),
-            ("code", code),
-            ("redirect_uri", &self.redirect_uri),
-            ("client_id", &self.client_id),
-            ("client_secret", &self.client_secret),
-        ];
 
-        let client = reqwest::Client::new();
-        let response = client
-            .post(token_url)
-            .form(&params)
-            .send()
-            .await
-            .context("Failed to exchange code for token")?;
-
-        let token_response: serde_json::Value = response
-            .json()
-            .await
-            .context("Failed to parse token response")?;
-
-        let access_token = token_response["access_token"]
-            .as_str()
-            .context("Missing access token in response")?
-            .to_string();
-
-        let refresh_token = token_response["refresh_token"]
-            .as_str()
-            .context("Missing refresh token in response")?
-            .to_string();
-
-        self.access_token = Some(access_token.clone());
-        self.refresh_token = Some(refresh_token.clone());
-
-        Ok((access_token, refresh_token))
-    }
-
-    pub async fn refresh_access_token(&mut self) -> Result<String> {
-        let refresh_token = self.refresh_token.as_ref()
-            .context("No refresh token available")?;
-
-        let token_url = "https://accounts.spotify.com/api/token";
-        
-        let params = [
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", &self.client_id),
-            ("client_secret", &self.client_secret),
-        ];
-
-        let client = reqwest::Client::new();
-        let response = client
-            .post(token_url)
-            .form(&params)
-            .send()
-            .await
-            .context("Failed to refresh token")?;
-
-        let token_response: serde_json::Value = response
-            .json()
-            .await
-            .context("Failed to parse token response")?;
-
-        let access_token = token_response["access_token"]
-            .as_str()
-            .context("Missing access token in response")?
-            .to_string();
-
-        self.access_token = Some(access_token.clone());
-
-        Ok(access_token)
-    }
-
-    pub fn has_valid_token(&self) -> bool {
-        self.access_token.is_some()
-    }
 }
 
 impl Drop for SpotifyConnect {
@@ -294,31 +190,9 @@ mod tests {
     fn test_spotify_connect_creation() {
         let spotify_connect = SpotifyConnect::new(
             "Test Device".to_string(),
-            "test_device_id".to_string(),
-            "test_client_id".to_string(),
-            "test_client_secret".to_string(),
-            "http://localhost:8080/callback".to_string(),
         );
         
         assert_eq!(spotify_connect.device_name, "Test Device");
-        assert_eq!(spotify_connect.device_id, "test_device_id");
         assert!(!spotify_connect.is_initialized());
-        assert!(!spotify_connect.has_valid_token());
-    }
-
-    #[test]
-    fn test_oauth_url_generation() {
-        let spotify_connect = SpotifyConnect::new(
-            "Test Device".to_string(),
-            "test_device_id".to_string(),
-            "test_client_id".to_string(),
-            "test_client_secret".to_string(),
-            "http://localhost:8080/callback".to_string(),
-        );
-        
-        let oauth_url = spotify_connect.get_oauth_url();
-        assert!(oauth_url.contains("accounts.spotify.com/authorize"));
-        assert!(oauth_url.contains("client_id=test_client_id"));
-        assert!(oauth_url.contains("streaming"));
     }
 }
