@@ -16,8 +16,17 @@ use std::{
 };
 use tokio::time::sleep;
 
+// RFID reader imports
+use linux_embedded_hal as hal;
+use embedded_hal::delay::DelayNs;
+use embedded_hal_bus::spi::ExclusiveDevice;
+use hal::spidev::{SpiModeFlags, SpidevOptions};
+use hal::{Delay, SpidevBus, SysfsPin};
+use mfrc522::comm::blocking::spi::SpiInterface;
+use mfrc522::Mfrc522;
+
 const BUTTON_PIN: u8 = 27;
-const LED_PIN: u8 = 22;
+const LED_PIN: u8 = 22;  // Matches reference.py exactly - same as MFRC522 RST pin
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const DEVICE_ID: &str = "d295ff8dc55fa0b2ec7f612119675301d38f802c";
@@ -26,6 +35,96 @@ const DEVICE_ID: &str = "d295ff8dc55fa0b2ec7f612119675301d38f802c";
 pub enum ButtonEvent {
     Pressed,
     Released(Duration),
+}
+
+pub trait RfidReader {
+    fn read_card_id(&mut self) -> Option<String>;
+    fn is_available(&mut self) -> bool;
+}
+
+pub struct Mfrc522RfidReader {
+    spi: ExclusiveDevice<SpidevBus, SysfsPin, Delay>,
+}
+
+impl Mfrc522RfidReader {
+    pub fn new() -> Result<Self> {
+        let mut delay = Delay;
+        
+        // Initialize SPI
+        let mut spi = SpidevBus::open("/dev/spidev0.0")
+            .context("Failed to open SPI device")?;
+        let options = SpidevOptions::new()
+            .max_speed_hz(1_000_000)
+            .mode(SpiModeFlags::SPI_MODE_0 | SpiModeFlags::SPI_NO_CS)
+            .build();
+        spi.configure(&options)
+            .context("Failed to configure SPI")?;
+
+        // Setup chip select pin (GPIO8 - CE0, matching SimpleMFRC522 standard)
+        let cs_pin = SysfsPin::new(8);
+        cs_pin.export().context("Failed to export RFID CS pin")?;
+        
+        // Wait for pin to be exported
+        while !cs_pin.is_exported() {}
+        delay.delay_ms(500u32);
+        
+        let cs_pin = cs_pin.into_output_pin(embedded_hal::digital::PinState::High)
+            .context("Failed to set RFID CS pin as output")?;
+
+        // Create SPI device
+        let spi = ExclusiveDevice::new(spi, cs_pin, Delay)?;
+        
+        info!("MFRC522 SPI interface initialized (RST shared with LED on GPIO 22)");
+        
+        Ok(Self { spi })
+    }
+}
+
+impl RfidReader for Mfrc522RfidReader {
+    fn read_card_id(&mut self) -> Option<String> {
+        // Create a simplified MFRC522 interface for each read
+        let itf = SpiInterface::new(&mut self.spi);
+        match Mfrc522::new(itf).init() {
+            Ok(mut mfrc522) => {
+                match mfrc522.reqa() {
+                    Ok(atqa) => {
+                        match mfrc522.select(&atqa) {
+                            Ok(uid) => {
+                                // Convert UID bytes to string
+                                let uid_bytes = uid.as_bytes();
+                                let uid_string = uid_bytes.iter()
+                                    .map(|b| format!("{:02x}", b))
+                                    .collect::<Vec<_>>()
+                                    .join("");
+                                
+                                info!("RFID card detected: {}", uid_string);
+                                
+                                // Halt the card to prevent repeated reads
+                                let _ = mfrc522.hlta();
+                                
+                                Some(uid_string)
+                            }
+                            Err(_) => None,
+                        }
+                    }
+                    Err(_) => None,
+                }
+            }
+            Err(_) => None,
+        }
+    }
+    
+    fn is_available(&mut self) -> bool {
+        // Try to create and initialize the MFRC522 interface
+        let itf = SpiInterface::new(&mut self.spi);
+        match Mfrc522::new(itf).init() {
+            Ok(mut mfrc522) => {
+                // Check if we can read the version register
+                mfrc522.version().is_ok()
+            }
+            Err(_) => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -86,8 +185,7 @@ pub struct Turny {
     spotify: AuthCodeSpotify,
     button: InputPin,
     led: OutputPin,
-    // RFID reader would be initialized here but mfrc522 crate needs SPI interface
-    // For now we'll simulate it
+    rfid_reader: Box<dyn RfidReader + Send>,
 }
 
 impl Turny {
@@ -115,12 +213,19 @@ impl Turny {
             .context("Failed to get LED pin")?
             .into_output();
 
+        // Initialize RFID reader
+        let rfid_reader: Box<dyn RfidReader + Send> = Box::new(
+            Mfrc522RfidReader::new()
+                .context("Failed to initialize MFRC522 RFID reader")?
+        );
+
         Ok(Self {
             config,
             state: Arc::new(Mutex::new(TurnyState::default())),
             spotify,
             button,
             led,
+            rfid_reader,
         })
     }
 
@@ -145,10 +250,8 @@ impl Turny {
         Ok(())
     }
 
-    fn read_rfid_id(&self) -> Option<String> {
-        // Simulated RFID reading - in real implementation this would use mfrc522
-        // The actual implementation would need proper SPI setup
-        None
+    fn read_rfid_id(&mut self) -> Option<String> {
+        self.rfid_reader.read_card_id()
     }
 
     fn reset_state(&self) {
@@ -326,21 +429,39 @@ impl Turny {
         self.blink_led(Duration::from_millis(500), Duration::from_millis(500), 3).await;
         self.play_startup_sound().await;
 
+        // Button monitoring state
+        let mut button_press_start: Option<Instant> = None;
+        let mut last_button_level = self.button.read();
+
         // Main loop
         loop {
-            // Check for manual reset (5+ second button press)
-            {
-                let mut state = self.state.lock().unwrap();
-                if let Some(press_start) = state.button_press_start {
-                    if !state.button_action_handled && press_start.elapsed() >= Duration::from_secs(5) {
-                        state.button_action_handled = true;
-                        drop(state);
-                        self.manual_reset().await?;
-                        continue;
+            // Button monitoring
+            let current_button_level = self.button.read();
+            if current_button_level != last_button_level {
+                match current_button_level {
+                    Level::Low => {
+                        // Button pressed
+                        button_press_start = Some(Instant::now());
+                        let mut state = self.state.lock().unwrap();
+                        state.button_press_start = button_press_start;
+                        state.button_action_handled = false;
+                    }
+                    Level::High => {
+                        // Button released
+                        if let Some(press_start) = button_press_start {
+                            let duration = press_start.elapsed();
+                            if let Err(e) = self.handle_button_press(duration).await {
+                                error!("Error handling button press: {}", e);
+                            }
+                        }
+                        button_press_start = None;
+                        let mut state = self.state.lock().unwrap();
+                        state.button_press_start = None;
                     }
                 }
             }
-
+            last_button_level = current_button_level;
+            
             // Periodic heartbeat check
             {
                 let mut state = self.state.lock().unwrap();
@@ -400,41 +521,7 @@ impl Turny {
         }
     }
 
-    async fn monitor_button_events(&mut self) -> Result<()> {
-        let mut button_press_start: Option<Instant> = None;
-        let mut last_level = self.button.read();
 
-        loop {
-            let current_level = self.button.read();
-            
-            if current_level != last_level {
-                match current_level {
-                    Level::Low => {
-                        // Button pressed
-                        button_press_start = Some(Instant::now());
-                        let mut state = self.state.lock().unwrap();
-                        state.button_press_start = button_press_start;
-                        state.button_action_handled = false;
-                    }
-                    Level::High => {
-                        // Button released
-                        if let Some(press_start) = button_press_start {
-                            let duration = press_start.elapsed();
-                            if let Err(e) = self.handle_button_press(duration).await {
-                                error!("Error handling button press: {}", e);
-                            }
-                        }
-                        button_press_start = None;
-                        let mut state = self.state.lock().unwrap();
-                        state.button_press_start = None;
-                    }
-                }
-            }
-            
-            last_level = current_level;
-            sleep(Duration::from_millis(10)).await;
-        }
-    }
 }
 
 #[tokio::main]
