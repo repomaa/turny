@@ -1,0 +1,42 @@
+[Unit]
+Description=Turny Spotify RFID Controller
+Documentation=https://github.com/your-username/turny
+After=network.target sound.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=gpio
+WorkingDirectory=/home/pi/turny
+ExecStart=/home/pi/turny/target/release/turny
+Restart=always
+RestartSec=10
+RestartPreventExitStatus=23
+
+# Environment variables
+Environment=RUST_LOG=info
+Environment=RUST_BACKTRACE=1
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/home/pi/turny
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Resource limits
+LimitNOFILE=1024
+MemoryAccounting=true
+MemoryMax=100M
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=turny
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,80 @@
+# Turny Spotify RFID Controller Configuration
+# Copy this file to config.toml and update with your values
+
+[spotify]
+# Spotify API credentials - get these from https://developer.spotify.com/dashboard
+client_id = "your_spotify_client_id_here"
+client_secret = "your_spotify_client_secret_here"
+redirect_uri = "http://localhost:8888/callback"
+
+# Your Spotifyd device ID - find this by running: spotifyd --no-daemon --verbose
+device_id = "your_spotifyd_device_id_here"
+
+[gpio]
+# GPIO pin assignments
+button_pin = 27
+led_pin = 22
+rfid_reset_pin = 25
+rfid_sda_pin = 8
+
+[settings]
+# Heartbeat check interval in seconds
+heartbeat_interval = 30
+
+# RFID polling interval in milliseconds
+poll_interval = 50
+
+# Default volume (0-100)
+default_volume = 70
+
+# Number of absence readings before pausing
+absence_threshold = 3
+
+[playlists]
+# Map RFID card IDs to Spotify playlist URIs
+# Format: "RFID_CARD_ID" = "spotify:playlist:PLAYLIST_ID"
+# 
+# To find your playlist ID:
+# 1. Open Spotify and go to your playlist
+# 2. Click "..." -> "Share" -> "Copy Spotify URI"
+# 3. The URI looks like: spotify:playlist:4Y6ZFtrQX7vuKVGLbNQ5sN
+#
+# To find your RFID card ID:
+# 1. Run the program in debug mode
+# 2. Place the card on the reader
+# 3. Check the logs for the card ID
+
+"383951559086" = "spotify:playlist:4Y6ZFtrQX7vuKVGLbNQ5sN"
+"123456789012" = "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M"
+"987654321098" = "spotify:playlist:37i9dQZF1DX0XUsuxWHRQd"
+
+[audio]
+# Startup sound file (optional)
+startup_sound = "startup.wav"
+
+# System command for playing audio files
+audio_player = "aplay"
+
+[logging]
+# Log level: error, warn, info, debug, trace
+level = "info"
+
+# Log to file (optional)
+# file = "/var/log/turny.log"
+
+[advanced]
+# Spotify API scopes (don't change unless you know what you're doing)
+scopes = [
+    "user-read-playback-state",
+    "user-modify-playback-state"
+]
+
+# Spotifyd service management
+spotifyd_service = "spotifyd"
+spotifyd_user_service = true
+
+# Maximum retries for heartbeat checks
+max_heartbeat_retries = 10
+
+# Retry delay multiplier (seconds)
+retry_delay_multiplier = 0.5
