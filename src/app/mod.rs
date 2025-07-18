@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 
+use crate::audio;
 use crate::auth::{AuthManager, TokenInfo};
 use crate::config::TurnyConfig;
 use crate::hardware::{ButtonEvent, HardwareManager};
@@ -48,9 +49,9 @@ impl TurnyApp {
         
         // Initialize authentication manager
         let auth_manager = Arc::new(AuthManager::new(
-            config.client_id.clone(),
-            config.client_secret.clone(),
-            config.redirect_uri.clone(),
+            config.spotify.client_id.clone(),
+            config.spotify.client_secret.clone(),
+            config.spotify.redirect_uri.clone(),
             vec![
                 "user-read-playback-state".to_string(),
                 "user-modify-playback-state".to_string(),
@@ -352,6 +353,11 @@ impl TurnyApp {
         for _ in 0..3 {
             self.hardware.blink_led(Duration::from_millis(200)).await?;
             sleep(Duration::from_millis(200)).await;
+        }
+        
+        // Play audio startup sound
+        if let Err(e) = audio::play_startup_sound(&self.config.audio.startup_sound).await {
+            warn!("Failed to play startup sound: {}", e);
         }
         
         Ok(())

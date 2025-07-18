@@ -5,7 +5,7 @@ A Rust implementation of a Spotify RFID controller for Raspberry Pi that allows 
 ## Features
 
 - **RFID-based Playlist Control**: Place RFID cards to start playing specific Spotify playlists
-- **Button Controls**: 
+- **Button Controls**:
   - Short press: Next track
   - Long press (1+ seconds): Previous track
   - Very long press (5+ seconds): Manual system reset
@@ -25,7 +25,7 @@ A Rust implementation of a Spotify RFID controller for Raspberry Pi that allows 
 
 ## Software Requirements
 
-- Rust 1.70+ 
+- Rust 1.70+
 - Spotifyd (Spotify daemon for Linux)
 - OpenSSL development libraries (if using native-tls)
 - GPIO access permissions
@@ -88,7 +88,6 @@ impl Default for TurnyConfig {
             client_id: "YOUR_CLIENT_ID".to_string(),
             client_secret: "YOUR_CLIENT_SECRET".to_string(),
             redirect_uri: "YOUR_REDIRECT_URI".to_string(),
-            device_id: "YOUR_SPOTIFYD_DEVICE_ID".to_string(),
             playlist_map,
         }
     }
@@ -172,7 +171,7 @@ sudo systemctl start turny
 The Rust implementation follows a similar structure to the Python version but with some key differences:
 
 - **Memory Safety**: Rust's ownership system prevents common memory issues
-- **Performance**: Compiled binary with zero-cost abstractions  
+- **Performance**: Compiled binary with zero-cost abstractions
 - **Error Handling**: Comprehensive error handling with `Result` types
 - **Async/Await**: Tokio runtime for asynchronous operations
 - **Type Safety**: Strong typing prevents runtime errors

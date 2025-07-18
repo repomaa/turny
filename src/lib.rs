@@ -10,6 +10,7 @@
 //! - Configuration management
 
 pub mod app;
+pub mod audio;
 pub mod auth;
 pub mod config;
 pub mod hardware;

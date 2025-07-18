@@ -4,37 +4,24 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    rust-overlay.url = "github:oxalica/rust-overlay";
   };
 
   outputs =
     {
-      self,
       nixpkgs,
       flake-utils,
-      rust-overlay,
+      ...
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs {
-          inherit system overlays;
-        };
-
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [
-            "rust-src"
-            "rust-analyzer"
-          ];
+          inherit system;
         };
       in
       {
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
-            # Rust toolchain
-            rustToolchain
-
             # System dependencies for librespot and audio
             alsa-lib
             alsa-lib.dev
@@ -42,13 +29,9 @@
             openssl
             openssl.dev
 
-            # Avahi for DNS-SD/mDNS discovery (required by librespot)
-            avahi
-            avahi.dev
-
             # Additional dependencies for Raspberry Pi GPIO and SPI
             # (these might not be needed on x86_64 but won't hurt)
-            libudev-zero
+            udev
 
             # Development tools
             cargo-watch
@@ -67,7 +50,7 @@
 
           # Environment variables
           RUST_BACKTRACE = "1";
-          PKG_CONFIG_PATH = "${pkgs.alsa-lib.dev}/lib/pkgconfig:${pkgs.openssl.dev}/lib/pkgconfig:${pkgs.avahi.dev}/lib/pkgconfig";
+          PKG_CONFIG_PATH = "${pkgs.alsa-lib.dev}/lib/pkgconfig:${pkgs.openssl.dev}/lib/pkgconfig";
           ALSA_PCM_CARD = "default";
           ALSA_PCM_DEVICE = "0";
 
@@ -95,6 +78,76 @@
           #   fi
           # '';
         };
+
+        packages.default = pkgs.rustPlatform.buildRustPackage {
+          pname = "turny";
+          version = "0.1.0";
+
+          src = ./.;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+          };
+
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            cmake
+            rustPlatform.bindgenHook
+          ];
+
+          buildInputs = with pkgs; [
+            alsa-lib
+            alsa-lib.dev
+            openssl
+            openssl.dev
+            udev
+          ];
+
+          meta = with pkgs.lib; {
+            description = "Turny Spotify RFID Controller (native build)";
+            homepage = "https://github.com/user/turny";
+            license = licenses.mit;
+            maintainers = [ ];
+            platforms = platforms.linux;
+          };
+        };
+
+        packages.cross-rpi =
+          let
+            crossPkgs = pkgs.pkgsCross.aarch64-multiplatform.pkgsStatic;
+          in
+          crossPkgs.rustPlatform.buildRustPackage {
+            pname = "turny";
+            version = "0.1.0";
+
+            src = ./.;
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+            };
+
+            nativeBuildInputs = with crossPkgs; [
+              pkg-config
+              cmake
+              rustPlatform.bindgenHook
+            ];
+
+            buildInputs = with crossPkgs; [
+              alsa-lib
+              alsa-lib.dev
+              openssl
+              openssl.dev
+              udev
+            ];
+
+            meta = with pkgs.lib; {
+              description = "Turny Spotify RFID Controller";
+              homepage = "https://github.com/user/turny";
+              license = licenses.mit;
+              maintainers = [ ];
+              platforms = [
+                "aarch64-linux"
+              ];
+            };
+          };
       }
     );
 }

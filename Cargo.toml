@@ -5,7 +5,10 @@ edition = "2021"
 
 [dependencies]
 
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = [
+    "json",
+    "native-tls",
+], default-features = false }
 
 # Raspberry Pi GPIO
 rppal = "0.17"
@@ -55,12 +58,24 @@ toml = "0.8"
 # UUID generation
 uuid = { version = "1.0", features = ["v4"] }
 
-
+# Audio playback
+rodio = "0.17"
 
 # Librespot - Spotify Connect integration
-librespot = { version = "0.6", features = ["alsa-backend"] }
-librespot-core = "0.6"
-librespot-connect = "0.6"
-librespot-playback = "0.6"
-librespot-discovery = "0.6"
-librespot-oauth = "0.6"
+librespot = { version = "0.6", default-features = false, features = [
+    "rodio-backend",
+] }
+librespot-core = { version = "0.6", default-features = false }
+librespot-connect = { version = "0.6", default-features = false }
+librespot-playback = { version = "0.6", default-features = false, features = [
+    "rodio-backend",
+] }
+librespot-oauth = { version = "0.6", default-features = false }
+
+# Try to use ring crypto provider to avoid aws-lc-rs cross-compilation issues
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+# Conditional dependencies to avoid aws-lc-rs on ARM targets (like Raspberry Pi)
+# Only use aws-lc-rs on x86_64 and aarch64 where it compiles reliably
+[target.'cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))'.dependencies]
+aws-lc-rs = { version = "1.12", features = ["bindgen"] }

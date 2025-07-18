@@ -7,9 +7,6 @@ client_id = "your_spotify_client_id_here"
 client_secret = "your_spotify_client_secret_here"
 redirect_uri = "http://localhost:8888/callback"
 
-# Your Spotifyd device ID - find this by running: spotifyd --no-daemon --verbose
-device_id = "your_spotifyd_device_id_here"
-
 [gpio]
 # GPIO pin assignments
 button_pin = 27
@@ -18,9 +15,6 @@ rfid_reset_pin = 25
 rfid_sda_pin = 8
 
 [settings]
-# Heartbeat check interval in seconds
-heartbeat_interval = 30
-
 # RFID polling interval in milliseconds
 poll_interval = 50
 
@@ -33,7 +27,7 @@ absence_threshold = 3
 [playlists]
 # Map RFID card IDs to Spotify playlist URIs
 # Format: "RFID_CARD_ID" = "spotify:playlist:PLAYLIST_ID"
-# 
+#
 # To find your playlist ID:
 # 1. Open Spotify and go to your playlist
 # 2. Click "..." -> "Share" -> "Copy Spotify URI"
@@ -49,7 +43,6 @@ absence_threshold = 3
 "987654321098" = "spotify:playlist:37i9dQZF1DX0XUsuxWHRQd"
 
 [audio]
-# Startup sound file (optional)
 startup_sound = "startup.wav"
 
 # System command for playing audio files
