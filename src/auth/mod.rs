@@ -75,7 +75,9 @@ impl AuthManager {
         redirect_uri: String,
         scopes: Vec<String>,
     ) -> Self {
-        let token_file_path = PathBuf::from("spotify_token.json");
+        let token_file_path = std::env::var("HOME")
+            .map(|h| PathBuf::from(h).join("spotify_token.json"))
+            .unwrap_or_else(|_| PathBuf::from("spotify_token.json"));
 
         let auth_manager = Self {
             client_id,
