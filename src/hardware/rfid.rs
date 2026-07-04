@@ -2,12 +2,50 @@ use anyhow::{Context, Result};
 use embedded_hal_bus::spi::ExclusiveDevice;
 use linux_embedded_hal as hal;
 use hal::spidev::{SpiModeFlags, SpidevOptions};
-use hal::{Delay, SpidevBus, SysfsPin};
+use hal::{Delay, SpidevBus};
 use log::{debug, info};
 use mfrc522::comm::blocking::spi::SpiInterface;
 use mfrc522::Mfrc522;
+use rppal::gpio::{Gpio, OutputPin};
 use std::time::{Duration, Instant};
-use embedded_hal::delay::DelayNs;
+
+/// Wrapper around rppal's OutputPin that implements embedded-hal 1.0 traits.
+/// Replaces the deprecated sysfs GPIO interface (SysfsPin) which doesn't work
+/// with newer kernels that use dynamic gpiochip base offsets.
+struct CsPin(OutputPin);
+
+#[derive(Debug)]
+enum CsPinError {}
+
+impl std::fmt::Display for CsPinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CS pin error")
+    }
+}
+
+impl std::error::Error for CsPinError {}
+
+impl embedded_hal::digital::Error for CsPinError {
+    fn kind(&self) -> embedded_hal::digital::ErrorKind {
+        embedded_hal::digital::ErrorKind::Other
+    }
+}
+
+impl embedded_hal::digital::ErrorType for CsPin {
+    type Error = CsPinError;
+}
+
+impl embedded_hal::digital::OutputPin for CsPin {
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        self.0.set_low();
+        Ok(())
+    }
+
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        self.0.set_high();
+        Ok(())
+    }
+}
 
 /// Trait for RFID card readers
 pub trait RfidReader {
@@ -17,7 +55,7 @@ pub trait RfidReader {
 
 /// MFRC522 RFID reader implementation
 pub struct Mfrc522RfidReader {
-    spi: ExclusiveDevice<SpidevBus, SysfsPin, Delay>,
+    spi: ExclusiveDevice<SpidevBus, CsPin, Delay>,
     last_read_time: Option<Instant>,
     read_cooldown: Duration,
 }
@@ -26,9 +64,7 @@ impl Mfrc522RfidReader {
     /// Create a new MFRC522 RFID reader
     pub fn new() -> Result<Self> {
         info!("Initializing MFRC522 RFID reader...");
-        
-        let mut delay = Delay;
-        
+
         // Initialize SPI
         let mut spi = SpidevBus::open("/dev/spidev0.0")
             .context("Failed to open SPI device")?;
@@ -40,21 +76,20 @@ impl Mfrc522RfidReader {
             .context("Failed to configure SPI")?;
 
         // Setup chip select pin (GPIO8 - CE0, matching SimpleMFRC522 standard)
-        let cs_pin = SysfsPin::new(8);
-        cs_pin.export().context("Failed to export RFID CS pin")?;
-        
-        // Wait for pin to be exported
-        while !cs_pin.is_exported() {}
-        delay.delay_ns(500_000_000u32); // 500ms in nanoseconds
-        
-        let cs_pin = cs_pin.into_output_pin(embedded_hal::digital::PinState::High)
-            .context("Failed to set RFID CS pin as output")?;
+        // Using rppal which accesses /dev/gpiomem directly with BCM numbering,
+        // avoiding the deprecated sysfs GPIO export that breaks on newer kernels.
+        let gpio = Gpio::new().context("Failed to initialize GPIO")?;
+        let mut cs_pin = gpio
+            .get(8)
+            .context("Failed to get GPIO pin 8")?
+            .into_output();
+        cs_pin.set_high();
 
         // Create SPI device
-        let spi = ExclusiveDevice::new(spi, cs_pin, Delay)?;
-        
+        let spi = ExclusiveDevice::new(spi, CsPin(cs_pin), Delay)?;
+
         info!("MFRC522 SPI interface initialized (RST shared with LED on GPIO 22)");
-        
+
         Ok(Self {
             spi,
             last_read_time: None,

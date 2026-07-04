@@ -18,6 +18,8 @@ use config::TurnyConfig;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    rustls::crypto::ring::default_provider().install_default().expect("Failed to install rustls CryptoProvider");
+
     // Initialize logging
     env_logger::init();
 
