@@ -63,12 +63,12 @@ rodio = "0.17"
 
 # Librespot - Spotify Connect integration
 librespot = { version = "0.6", default-features = false, features = [
-    "rodio-backend",
+    "alsa-backend",
 ] }
 librespot-core = { version = "0.6", default-features = false }
 librespot-connect = { version = "0.6", default-features = false }
 librespot-playback = { version = "0.6", default-features = false, features = [
-    "rodio-backend",
+    "alsa-backend",
 ] }
 librespot-oauth = { version = "0.6", default-features = false }
 
