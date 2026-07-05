@@ -49,6 +49,7 @@ pub struct AuthCallbackQuery {
 pub struct CardMappingRequest {
     pub card_id: String,
     pub playlist_uri: String,
+    pub playlist_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -133,7 +134,7 @@ pub async fn add_card(
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     state
         .db
-        .add_card_mapping(&body.card_id, &body.playlist_uri)
+        .add_card_mapping(&body.card_id, &body.playlist_uri, body.playlist_name.as_deref())
         .map_err(ApiError::from)?;
     Ok((StatusCode::CREATED, Json(serde_json::json!({}))))
 }

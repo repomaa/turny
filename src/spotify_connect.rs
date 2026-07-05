@@ -195,6 +195,7 @@ impl SpotifyConnect {
             tracks: track_refs,
         };
 
+        spirc.activate().context("Failed to activate Spirc")?;
         spirc.load(command).context("Failed to load playlist via Spirc")?;
 
         info!("Loaded playlist via Spirc: {}", playlist_uri);

@@ -91,7 +91,8 @@
 		if (!lastCardId || !selectedPlaylistUri) return;
 		saving = true;
 		try {
-			await saveCard(lastCardId, selectedPlaylistUri);
+			const pl = playlists.find((p) => p.uri === selectedPlaylistUri);
+			await saveCard(lastCardId, selectedPlaylistUri, pl?.name);
 			await loadCards();
 			cardJustDetected = false;
 			selectedPlaylistUri = '';
@@ -361,7 +362,7 @@
 								<li class="flex items-center justify-between px-4 py-3">
 									<div class="min-w-0">
 										<p class="font-mono text-sm text-gray-300">{card.card_id}</p>
-										<p class="truncate text-sm text-gray-500">{card.playlist_name}</p>
+										<p class="truncate text-sm text-gray-500">{card.playlist_name || card.playlist_uri}</p>
 									</div>
 									<button
 										class="rounded-lg bg-red-900/50 px-3 py-1 text-sm text-red-300 hover:bg-red-900"

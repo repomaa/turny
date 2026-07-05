@@ -120,7 +120,7 @@ impl Mfrc522RfidReader {
             mfrc522,
             _rst_pin: rst_pin,
             last_read_time: None,
-            read_cooldown: Duration::from_millis(500),
+            read_cooldown: Duration::from_millis(100),
         })
     }
 

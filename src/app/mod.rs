@@ -268,7 +268,7 @@ impl TurnyApp {
         self.state_manager.increment_absence_count()?;
 
         // Check if we should auto-pause
-        if self.state_manager.should_auto_pause(10)? {
+        if self.state_manager.should_auto_pause(self.config.settings.absence_threshold as u32)? {
             let is_playing = self.state_manager.with_state(|state| state.is_playing)?;
 
             if is_playing {

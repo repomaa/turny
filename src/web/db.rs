@@ -37,11 +37,11 @@ impl Db {
         })
     }
 
-    pub fn add_card_mapping(&self, card_id: &str, playlist_uri: &str) -> Result<()> {
+    pub fn add_card_mapping(&self, card_id: &str, playlist_uri: &str, playlist_name: Option<&str>) -> Result<()> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("DB lock error: {}", e))?;
         conn.execute(
-            "INSERT OR REPLACE INTO card_mappings (card_id, playlist_uri) VALUES (?1, ?2)",
-            rusqlite::params![card_id, playlist_uri],
+            "INSERT OR REPLACE INTO card_mappings (card_id, playlist_uri, playlist_name) VALUES (?1, ?2, ?3)",
+            rusqlite::params![card_id, playlist_uri, playlist_name],
         )
         .context("Failed to add card mapping")?;
         Ok(())
