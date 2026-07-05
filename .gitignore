@@ -5,3 +5,4 @@ turny.db
 frontend/node_modules/
 frontend/build/
 config.toml
+result

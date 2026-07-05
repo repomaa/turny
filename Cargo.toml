@@ -76,7 +76,7 @@ librespot-oauth = { version = "0.6", default-features = false }
 axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
-rust-embed = "8"
+rust-embed = { version = "8", features = ["debug-embed"] }
 mime_guess = "2"
 
 # Try to use ring crypto provider to avoid aws-lc-rs cross-compilation issues
