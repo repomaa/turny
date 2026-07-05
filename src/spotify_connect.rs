@@ -6,7 +6,7 @@ use librespot::core::{
     spotify_uri::SpotifyUri,
 };
 use librespot::connect::{
-    LoadRequest, LoadRequestOptions,
+    LoadContextOptions, LoadRequest, LoadRequestOptions, Options,
     ConnectConfig, Spirc,
 };
 use librespot::discovery::DeviceType;
@@ -195,6 +195,10 @@ impl SpotifyConnect {
             playlist_uri.to_string(),
             LoadRequestOptions {
                 start_playing: true,
+                context_options: Some(LoadContextOptions::Options(Options {
+                    repeat: true,
+                    ..Default::default()
+                })),
                 ..Default::default()
             },
         );
