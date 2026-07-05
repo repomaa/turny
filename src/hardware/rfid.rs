@@ -61,6 +61,7 @@ pub struct Mfrc522RfidReader {
     mfrc522: Mfrc522Device,
     _rst_pin: OutputPin,
     last_read_time: Option<Instant>,
+    last_card_id: Option<String>,
     read_cooldown: Duration,
 }
 
@@ -120,6 +121,7 @@ impl Mfrc522RfidReader {
             mfrc522,
             _rst_pin: rst_pin,
             last_read_time: None,
+            last_card_id: None,
             read_cooldown: Duration::from_millis(100),
         })
     }
@@ -176,13 +178,19 @@ impl RfidReader for Mfrc522RfidReader {
                 self.last_read_time = Some(Instant::now());
 
                 if let Some(ref id) = card_id {
-                    info!("RFID card detected: {}", id);
+                    if self.last_card_id.as_ref() != Some(id) {
+                        info!("RFID card detected: {}", id);
+                    }
+                    self.last_card_id = card_id.clone();
+                } else {
+                    self.last_card_id = None;
                 }
 
                 card_id
             }
             Err(e) => {
                 debug!("Failed to read RFID card: {}", e);
+                self.last_card_id = None;
                 None
             }
         }
