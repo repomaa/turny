@@ -189,11 +189,13 @@
 	function handleWsEvent(ev: WsEvent) {
 		switch (ev.type) {
 			case 'RfidDetected':
-				lastCardId = ev.card_id;
-				existingMapping = ev.existing_mapping;
-				cardJustDetected = true;
-				editMode = false;
-				selectedPlaylistUri = '';
+				if (lastCardId !== ev.card_id) {
+					lastCardId = ev.card_id;
+					existingMapping = ev.existing_mapping;
+					cardJustDetected = true;
+					editMode = false;
+					selectedPlaylistUri = '';
+				}
 				break;
 			case 'PlaybackStarted':
 			case 'PlaybackResumed':
