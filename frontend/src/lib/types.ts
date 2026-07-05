@@ -41,9 +41,14 @@ export interface LastCard {
 	card_id: string;
 }
 
+export interface Volume {
+	volume: number;
+}
+
 export type WsEvent =
 	| { type: 'RfidDetected'; card_id: string }
 	| { type: 'PlaybackStarted'; card_id: string; playlist_uri: string }
 	| { type: 'PlaybackPaused' }
 	| { type: 'PlaybackResumed' }
-	| { type: 'StateChanged'; is_playing: boolean; current_card: string | null; context_uri: string | null };
+	| { type: 'StateChanged'; is_playing: boolean; current_card: string | null; context_uri: string | null }
+	| { type: 'VolumeChanged'; volume: number };

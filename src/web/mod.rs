@@ -56,6 +56,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/player/pause", post(api::player_pause))
         .route("/player/next", post(api::player_next))
         .route("/player/previous", post(api::player_previous))
+        .route("/volume", get(api::get_volume).post(api::set_volume))
         .with_state(state.clone());
 
     Router::new()

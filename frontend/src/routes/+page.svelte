@@ -13,7 +13,9 @@
 		playerPlay,
 		playerPause,
 		playerNext,
-		playerPrevious
+		playerPrevious,
+		getVolume,
+		setVolume
 	} from '$lib/api';
 	import type { Card, Playlist, NowPlaying, WsEvent } from '$lib/types';
 
@@ -28,6 +30,8 @@
 	let playerBusy = $state(false);
 	let saving = $state(false);
 	let error = $state<string | null>(null);
+	let volume = $state<number | null>(null);
+	let volumeSending = $state(false);
 
 	let ws: WebSocketManager | null = null;
 
@@ -69,6 +73,31 @@
 		} catch {
 			// ignore polling errors
 		}
+	}
+
+	async function loadVolume() {
+		try {
+			const res = await getVolume();
+			volume = res.volume;
+		} catch {
+			// ignore
+		}
+	}
+
+	let volumeDebounce: ReturnType<typeof setTimeout> | null = null;
+
+	async function handleVolumeChange(v: number) {
+		volume = v;
+		if (volumeDebounce) clearTimeout(volumeDebounce);
+		volumeSending = true;
+		volumeDebounce = setTimeout(async () => {
+			try {
+				await setVolume(v);
+			} catch {
+				// ignore
+			}
+			volumeSending = false;
+		}, 300);
 	}
 
 	async function loadCards() {
@@ -140,6 +169,9 @@
 			case 'StateChanged':
 				refreshNowPlaying();
 				break;
+			case 'VolumeChanged':
+				volume = ev.volume;
+				break;
 		}
 	}
 
@@ -162,6 +194,7 @@
 				loadCards();
 				loadPlaylists();
 				refreshNowPlaying();
+				loadVolume();
 			}
 		});
 
@@ -192,6 +225,7 @@
 		if (authenticated) {
 			loadCards();
 			loadPlaylists();
+			if (volume === null) loadVolume();
 		}
 	});
 </script>
@@ -301,6 +335,22 @@
 					</div>
 				{:else}
 					<p class="text-gray-500">Nothing playing right now.</p>
+				{/if}
+
+				<!-- Volume Control -->
+				{#if volume !== null}
+					<div class="mt-5 flex items-center gap-3">
+						<svg class="h-5 w-5 shrink-0 text-gray-400" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4.03v8.06A4.5 4.5 0 0 0 16.5 12z"/></svg>
+						<input
+							type="range"
+							min="0"
+							max="100"
+							value={volume}
+							class="h-2 flex-1 cursor-pointer appearance-none rounded-full bg-gray-700 accent-green-500"
+							oninput={(e) => handleVolumeChange(Number(e.currentTarget.value))}
+						/>
+						<span class="w-10 shrink-0 text-right text-sm tabular-nums text-gray-400">{volume}%</span>
+					</div>
 				{/if}
 			</section>
 

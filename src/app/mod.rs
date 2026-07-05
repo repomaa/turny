@@ -73,6 +73,16 @@ impl TurnyApp {
         let token_info = self.auth_manager.ensure_valid_token().await
             .context("No valid Spotify authentication. Please authenticate first.")?;
 
+        // Load persisted volume and set it as initial volume for Spotify Connect
+        let default_vol = self.config.settings.default_volume;
+        let volume = if let Some(db) = &self.db {
+            db.get_volume().unwrap_or(None).unwrap_or(default_vol)
+        } else {
+            default_vol
+        };
+        let vol_u16 = (volume as u32 * u16::MAX as u32 / 100) as u16;
+        self.spotify_connect.set_initial_volume(vol_u16);
+
         // Initialize Spotify Connect with the token
         self.spotify_connect.initialize_with_token(
             token_info.access_token,
@@ -366,6 +376,20 @@ impl TurnyApp {
                 info!("Web: previous command");
                 if let Err(e) = self.spotify_connect.previous() {
                     error!("Failed to previous: {}", e);
+                }
+            }
+            PlayerCommand::SetVolume(volume) => {
+                info!("Web: set volume to {}", volume);
+                if let Err(e) = self.spotify_connect.set_volume(volume) {
+                    error!("Failed to set volume: {}", e);
+                }
+                if let Some(db) = &self.db {
+                    if let Err(e) = db.set_volume(volume) {
+                        warn!("Failed to persist volume: {}", e);
+                    }
+                }
+                if let Some(tx) = &self.event_tx {
+                    let _ = tx.send(WebEvent::VolumeChanged { volume });
                 }
             }
         }

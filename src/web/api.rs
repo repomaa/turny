@@ -240,3 +240,33 @@ pub async fn player_previous(
         .await;
     Ok(Json(serde_json::json!({})))
 }
+
+#[derive(Debug, Serialize)]
+pub struct VolumeResponse {
+    pub volume: u8,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VolumeRequest {
+    pub volume: u8,
+}
+
+pub async fn get_volume(State(state): State<AppState>) -> Result<Json<VolumeResponse>, ApiError> {
+    let volume = state.db.get_volume()?.unwrap_or(70);
+    Ok(Json(VolumeResponse { volume }))
+}
+
+pub async fn set_volume(
+    State(state): State<AppState>,
+    Json(body): Json<VolumeRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if body.volume > 100 {
+        return Err(ApiError::BadRequest("Volume must be 0-100".to_string()));
+    }
+    state.db.set_volume(body.volume).map_err(ApiError::from)?;
+    let _ = state
+        .player_cmd_tx
+        .send(PlayerCommand::SetVolume(body.volume))
+        .await;
+    Ok(Json(serde_json::json!({})))
+}

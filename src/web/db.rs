@@ -28,6 +28,10 @@ impl Db {
             CREATE TABLE IF NOT EXISTS last_card (
                 id INTEGER PRIMARY KEY DEFAULT 1,
                 card_id TEXT
+            );
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             );",
         )
         .context("Failed to create database tables")?;
@@ -121,5 +125,37 @@ impl Db {
             .context("Failed to migrate card mapping")?;
         }
         Ok(())
+    }
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("DB lock error: {}", e))?;
+        let mut stmt = conn
+            .prepare("SELECT value FROM settings WHERE key = ?1")
+            .context("Failed to prepare query")?;
+        let result = stmt
+            .query_row(rusqlite::params![key], |row| row.get::<_, String>(0))
+            .optional()?;
+        Ok(result)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("DB lock error: {}", e))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            rusqlite::params![key, value],
+        )
+        .context("Failed to set setting")?;
+        Ok(())
+    }
+
+    pub fn get_volume(&self) -> Result<Option<u8>> {
+        self.get_setting("volume")?
+            .map(|v| v.parse::<u8>())
+            .transpose()
+            .map_err(|e| anyhow::anyhow!("Invalid volume in database: {}", e))
+    }
+
+    pub fn set_volume(&self, volume: u8) -> Result<()> {
+        self.set_setting("volume", &volume.to_string())
     }
 }

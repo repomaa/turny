@@ -26,6 +26,7 @@ pub struct SpotifyConnect {
     session: Option<Session>,
     spirc: Option<Spirc>,
     spirc_task: Option<tokio::task::JoinHandle<()>>,
+    initial_volume: u16,
 }
 
 impl SpotifyConnect {
@@ -37,6 +38,7 @@ impl SpotifyConnect {
             session: None,
             spirc: None,
             spirc_task: None,
+            initial_volume: u16::MAX / 2,
         }
     }
 
@@ -91,7 +93,7 @@ impl SpotifyConnect {
         let connect_config = ConnectConfig {
             name: self.device_name.clone(),
             device_type: DeviceType::Speaker,
-            initial_volume: u16::MAX / 2,
+            initial_volume: self.initial_volume,
             is_group: false,
             ..Default::default()
         };
@@ -153,6 +155,16 @@ impl SpotifyConnect {
 
     pub fn is_initialized(&self) -> bool {
         self.session.is_some()
+    }
+
+    pub fn set_initial_volume(&mut self, volume: u16) {
+        self.initial_volume = volume;
+    }
+
+    pub fn set_volume(&self, volume_pct: u8) -> Result<()> {
+        let spirc = self.spirc.as_ref().context("Spirc not initialized")?;
+        let volume = (volume_pct as u32 * u16::MAX as u32 / 100) as u16;
+        spirc.set_volume(volume).context("Failed to set volume")
     }
 
     pub async fn load_track(&self, playlist_uri: &str) -> Result<()> {

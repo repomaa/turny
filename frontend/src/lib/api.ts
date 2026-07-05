@@ -5,7 +5,8 @@ import type {
 	Playlist,
 	NowPlaying,
 	PlayerState,
-	LastCard
+	LastCard,
+	Volume
 } from './types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -77,4 +78,16 @@ export function playerNext(): Promise<void> {
 
 export function playerPrevious(): Promise<void> {
 	return request<void>('/api/player/previous', { method: 'POST' });
+}
+
+export function getVolume(): Promise<Volume> {
+	return request<Volume>('/api/volume');
+}
+
+export function setVolume(volume: number): Promise<void> {
+	return request<void>('/api/volume', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ volume })
+	});
 }

@@ -17,6 +17,9 @@ pub enum WebEvent {
         current_card: Option<String>,
         context_uri: Option<String>,
     },
+    VolumeChanged {
+        volume: u8,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -25,4 +28,5 @@ pub enum PlayerCommand {
     Pause,
     Next,
     Previous,
+    SetVolume(u8),
 }
