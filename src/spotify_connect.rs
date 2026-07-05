@@ -155,10 +155,6 @@ impl SpotifyConnect {
         self.session.is_some()
     }
 
-    pub fn get_session(&self) -> Option<&Session> {
-        self.session.as_ref()
-    }
-
     pub async fn load_track(&self, playlist_uri: &str) -> Result<()> {
         let spirc = self
             .spirc

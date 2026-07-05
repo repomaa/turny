@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Turny &mdash; Auth Redirect</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      background: #111827;
+      color: #f3f4f6;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+    }
+    .card {
+      text-align: center;
+      padding: 2rem;
+    }
+    .spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid #374151;
+      border-top-color: #22c55e;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 1rem;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .error {
+      color: #ef4444;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div id="content">
+      <div class="spinner"></div>
+      <p>Redirecting back to Turny&hellip;</p>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var params = new URLSearchParams(window.location.search);
+      var code = params.get('code');
+      var stateParam = params.get('state');
+      var error = params.get('error');
+
+      var content = document.getElementById('content');
+
+      function fail(msg) {
+        content.innerHTML = '<h1 class="error">Authentication failed</h1><p>' + msg + '</p>';
+      }
+
+      if (error) {
+        fail('Spotify error: ' + error);
+        return;
+      }
+
+      if (!code || !stateParam) {
+        fail('Missing code or state parameter.');
+        return;
+      }
+
+      var decoded;
+      try {
+        // state is base64url-encoded JSON: {"csrf":"...","origin":"http://192.168.x.x:8080"}
+        var b64 = stateParam.replace(/-/g, '+').replace(/_/g, '/');
+        var padded = b64 + '==='.slice((b64.length + 3) % 4);
+        decoded = JSON.parse(atob(padded));
+      } catch (e) {
+        fail('Could not decode state parameter.');
+        return;
+      }
+
+      if (!decoded.origin) {
+        fail('State missing origin.');
+        return;
+      }
+
+      var callbackUrl = decoded.origin +
+        '/api/auth/callback?code=' + encodeURIComponent(code) +
+        '&state=' + encodeURIComponent(decoded.csrf || '');
+
+      window.location.replace(callbackUrl);
+    })();
+  </script>
+</body>
+</html>

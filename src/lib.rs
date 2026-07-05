@@ -16,6 +16,7 @@ pub mod config;
 pub mod hardware;
 pub mod spotify_connect;
 pub mod state;
+pub mod web;
 
 // Re-export commonly used types for convenience
 pub use app::TurnyApp;

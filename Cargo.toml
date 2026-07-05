@@ -72,6 +72,13 @@ librespot-playback = { version = "0.6", default-features = false, features = [
 ] }
 librespot-oauth = { version = "0.6", default-features = false }
 
+# Web server
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+rust-embed = "8"
+mime_guess = "2"
+
 # Try to use ring crypto provider to avoid aws-lc-rs cross-compilation issues
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 

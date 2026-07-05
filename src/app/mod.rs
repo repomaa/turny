@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 
 use crate::audio;
@@ -10,6 +11,7 @@ use crate::config::TurnyConfig;
 use crate::hardware::{ButtonEvent, HardwareManager};
 use crate::spotify_connect::SpotifyConnect;
 use crate::state::StateManager;
+use crate::web::{Db, PlayerCommand, WebEvent};
 
 /// Main application struct that coordinates all components
 pub struct TurnyApp {
@@ -18,6 +20,9 @@ pub struct TurnyApp {
     hardware: HardwareManager,
     spotify_connect: SpotifyConnect,
     auth_manager: Arc<AuthManager>,
+    db: Option<Arc<Db>>,
+    event_tx: Option<broadcast::Sender<WebEvent>>,
+    player_cmd_rx: Option<mpsc::Receiver<PlayerCommand>>,
 }
 
 impl TurnyApp {
@@ -59,6 +64,9 @@ impl TurnyApp {
             hardware,
             spotify_connect,
             auth_manager,
+            db: None,
+            event_tx: None,
+            player_cmd_rx: None,
         })
     }
 
@@ -115,6 +123,28 @@ impl TurnyApp {
         self.spotify_connect.is_initialized()
     }
 
+    /// Get a clone of the auth manager
+    pub fn get_auth_manager(&self) -> Arc<AuthManager> {
+        self.auth_manager.clone()
+    }
+
+    /// Get a clone of the state manager
+    pub fn get_state_manager(&self) -> StateManager {
+        self.state_manager.clone()
+    }
+
+    /// Set web integration components
+    pub fn set_web_integration(
+        &mut self,
+        db: Arc<Db>,
+        event_tx: broadcast::Sender<WebEvent>,
+        player_cmd_rx: mpsc::Receiver<PlayerCommand>,
+    ) {
+        self.db = Some(db);
+        self.event_tx = Some(event_tx);
+        self.player_cmd_rx = Some(player_cmd_rx);
+    }
+
     /// Main application loop
     pub async fn run(&mut self) -> Result<()> {
         info!("Starting Turny application main loop...");
@@ -123,6 +153,15 @@ impl TurnyApp {
         self.play_startup_sound().await?;
 
         loop {
+            // If authenticated but Spotify Connect not yet initialized, try to init
+            if self.auth_manager.has_valid_token().await
+                && !self.spotify_connect.is_initialized()
+            {
+                if let Err(e) = self.initialize_spotify().await {
+                    debug!("Deferred Spotify init failed: {}", e);
+                }
+            }
+
             // Check for RFID card
             if let Some(card_id) = self.hardware.read_rfid_card() {
                 self.handle_rfid_card(card_id).await?;
@@ -133,6 +172,11 @@ impl TurnyApp {
             // Check for button events
             if let Some(button_event) = self.hardware.check_button() {
                 self.handle_button_event(button_event).await?;
+            }
+
+            // Check for web player commands
+            while let Some(cmd) = self.player_cmd_rx.as_mut().and_then(|rx| rx.try_recv().ok()) {
+                self.handle_player_command(cmd).await?;
             }
 
             // Small delay to prevent busy waiting
@@ -147,15 +191,34 @@ impl TurnyApp {
         // Reset absence count
         self.state_manager.reset_absence_count()?;
 
+        // Broadcast RFID detected event
+        if let Some(tx) = &self.event_tx {
+            let _ = tx.send(WebEvent::RfidDetected {
+                card_id: card_id.clone(),
+            });
+        }
+
+        // Store last card in DB
+        if let Some(db) = &self.db {
+            if let Err(e) = db.set_last_card(&card_id) {
+                warn!("Failed to store last card: {}", e);
+            }
+        }
+
         // Check if this is a new card
         let current_card = self.state_manager.with_state(|state| {
             state.current_id.clone()
         })?;
 
         if current_card.as_ref() != Some(&card_id) {
-            // New card detected
-            if let Some(playlist_uri) = self.config.get_playlist_for_card(&card_id) {
-                let playlist_uri = playlist_uri.clone();
+            // Look up playlist: DB first, then config fallback
+            let playlist_uri = if let Some(db) = &self.db {
+                db.get_playlist_for_card(&card_id)?
+            } else {
+                self.config.get_playlist_for_card(&card_id).cloned()
+            };
+
+            if let Some(playlist_uri) = playlist_uri {
                 info!("Starting playback for card {} with playlist {}", card_id, playlist_uri);
 
                 // Validate playlist before starting playback
@@ -168,14 +231,29 @@ impl TurnyApp {
                 // Update state
                 self.state_manager.set_current_card(card_id.clone(), playlist_uri.clone())?;
 
-                // Start playback
-                self.start_playback(&playlist_uri).await?;
+                // Start playback (graceful failure if not authenticated/initialized)
+                if let Err(e) = self.start_playback(&playlist_uri).await {
+                    warn!("Failed to start playback for card {}: {}", card_id, e);
+                }
 
                 // Update playing state
                 self.state_manager.set_playing(true)?;
 
                 // Turn on LED
                 self.hardware.led_on()?;
+
+                // Broadcast playback started
+                if let Some(tx) = &self.event_tx {
+                    let _ = tx.send(WebEvent::PlaybackStarted {
+                        card_id: card_id.clone(),
+                        playlist_uri: playlist_uri.clone(),
+                    });
+                    let _ = tx.send(WebEvent::StateChanged {
+                        is_playing: true,
+                        current_card: Some(card_id),
+                        context_uri: Some(playlist_uri),
+                    });
+                }
             } else {
                 warn!("No playlist configured for card: {}", card_id);
             }
@@ -204,6 +282,16 @@ impl TurnyApp {
                 })?;
 
                 self.hardware.led_off()?;
+
+                // Broadcast state change
+                if let Some(tx) = &self.event_tx {
+                    let _ = tx.send(WebEvent::PlaybackPaused);
+                    let _ = tx.send(WebEvent::StateChanged {
+                        is_playing: false,
+                        current_card: None,
+                        context_uri: None,
+                    });
+                }
             }
         }
 
@@ -241,6 +329,49 @@ impl TurnyApp {
             info!("Next track requested");
             if let Err(e) = self.spotify_connect.next() {
                 error!("Failed to skip to next track: {}", e);
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle player commands from the web UI
+    async fn handle_player_command(&mut self, cmd: PlayerCommand) -> Result<()> {
+        if !self.spotify_connect.is_initialized() {
+            warn!("Player command received but Spotify Connect not initialized");
+            return Ok(());
+        }
+        match cmd {
+            PlayerCommand::Play => {
+                info!("Web: play command");
+                if let Err(e) = self.spotify_connect.play() {
+                    error!("Failed to play: {}", e);
+                }
+                self.state_manager.set_playing(true)?;
+                if let Some(tx) = &self.event_tx {
+                    let _ = tx.send(WebEvent::PlaybackResumed);
+                }
+            }
+            PlayerCommand::Pause => {
+                info!("Web: pause command");
+                if let Err(e) = self.spotify_connect.pause() {
+                    error!("Failed to pause: {}", e);
+                }
+                self.state_manager.set_playing(false)?;
+                if let Some(tx) = &self.event_tx {
+                    let _ = tx.send(WebEvent::PlaybackPaused);
+                }
+            }
+            PlayerCommand::Next => {
+                info!("Web: next command");
+                if let Err(e) = self.spotify_connect.next() {
+                    error!("Failed to skip: {}", e);
+                }
+            }
+            PlayerCommand::Previous => {
+                info!("Web: previous command");
+                if let Err(e) = self.spotify_connect.previous() {
+                    error!("Failed to previous: {}", e);
+                }
             }
         }
         Ok(())

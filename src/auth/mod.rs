@@ -98,8 +98,13 @@ impl AuthManager {
 
     /// Generate OAuth authorization URL
     pub fn get_auth_url(&self) -> String {
-        let scope_string = self.scopes.join(" ");
         let state = uuid::Uuid::new_v4().to_string();
+        self.get_auth_url_with_state(&state)
+    }
+
+    /// Generate OAuth authorization URL with a custom state parameter
+    pub fn get_auth_url_with_state(&self, state: &str) -> String {
+        let scope_string = self.scopes.join(" ");
 
         format!(
             "https://accounts.spotify.com/authorize?client_id={}&response_type=code&redirect_uri={}&scope={}&state={}",

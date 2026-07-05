@@ -1,3 +1,6 @@
 /target/
 /reference.py
 /.direnv/
+turny.db
+frontend/node_modules/
+frontend/build/

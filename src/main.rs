@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use log::{error, info, warn};
 use std::env;
 use std::io::{self, Write};
+use std::sync::Arc;
 use tokio::signal;
 
 mod app;
@@ -11,9 +12,12 @@ mod config;
 mod hardware;
 mod spotify_connect;
 mod state;
+mod web;
 
 use app::TurnyApp;
+use auth::AuthManager;
 use config::TurnyConfig;
+use state::StateManager;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -41,54 +45,58 @@ async fn run_hardware_mode() -> Result<()> {
     // Load configuration
     let config = load_config().await?;
 
+    // Create DB and migrate
+    let db = std::sync::Arc::new(web::Db::open("turny.db")?);
+    db.migrate_from_config(&config.playlists)?;
+
+    // Create channels
+    let (event_tx, _) = tokio::sync::broadcast::channel::<web::WebEvent>(100);
+    let (player_cmd_tx, player_cmd_rx) =
+        tokio::sync::mpsc::channel::<web::PlayerCommand>(100);
+
     // Create and initialize the application
     let mut app = TurnyApp::new(config)
         .await
         .context("Failed to create Turny application")?;
 
+    app.set_web_integration(db.clone(), event_tx.clone(), player_cmd_rx);
+
     // Check authentication - try refreshing existing token first
     if !app.is_authenticated().await {
-        match app.refresh_token().await {
-            Ok(_) => {
-                info!("Token refreshed successfully");
-            }
-            Err(e) => {
-                warn!("No valid token and refresh failed: {}", e);
-                println!("No valid authentication found!");
-                println!("Please visit this URL to authenticate:");
-                println!("{}", app.get_oauth_url());
-                println!();
-                print!("After authentication, paste the redirect URL here: ");
-                io::stdout().flush().unwrap();
-
-                let mut input = String::new();
-                io::stdin()
-                    .read_line(&mut input)
-                    .context("Failed to read redirect URL")?;
-
-                let redirect_url = input.trim();
-
-                // Authenticate with the redirect URL
-                match app.authenticate_with_redirect_url(redirect_url).await {
-                    Ok(_) => {
-                        info!("Authentication successful!");
-                    }
-                    Err(e) => {
-                        error!("Authentication failed: {}", e);
-                        return Err(e);
-                    }
-                }
-            }
+        if let Err(e) = app.refresh_token().await {
+            warn!(
+                "No valid token: {}. Authenticate via web UI at http://localhost:8080",
+                e
+            );
         }
     }
 
     // Initialize Spotify services
-    if let Err(e) = app.initialize_spotify().await {
-        error!("Failed to initialize Spotify services: {}", e);
-        warn!("You may need to re-authenticate. Visit:");
-        warn!("{}", app.get_oauth_url());
-        return Err(e);
+    if app.is_authenticated().await {
+        if let Err(e) = app.initialize_spotify().await {
+            error!("Failed to initialize Spotify services: {}", e);
+        }
     }
+
+    // Get shared state for web server
+    let auth_manager = app.get_auth_manager();
+    let state_manager = app.get_state_manager();
+
+    let web_state = web::AppState {
+        db,
+        auth_manager,
+        spotify_api: web::SpotifyApi::new(),
+        event_tx,
+        player_cmd_tx,
+        state_manager,
+    };
+
+    let web_addr = "0.0.0.0:8080".to_string();
+    let web_handle = tokio::spawn(async move {
+        if let Err(e) = web::start_web_server(web_state, &web_addr).await {
+            error!("Web server error: {}", e);
+        }
+    });
 
     // Set up graceful shutdown
     let shutdown_signal = setup_shutdown_signal();
@@ -104,6 +112,9 @@ async fn run_hardware_mode() -> Result<()> {
         _ = shutdown_signal => {
             info!("Shutdown signal received");
         }
+        _ = web_handle => {
+            info!("Web server stopped");
+        }
     }
 
     // Graceful shutdown
@@ -111,6 +122,59 @@ async fn run_hardware_mode() -> Result<()> {
     app.shutdown().await?;
 
     info!("Turny Music Player stopped");
+    Ok(())
+}
+
+/// Run web server only (no hardware required)
+async fn run_web_mode() -> Result<()> {
+    info!("Starting Turny web server (no hardware mode)...");
+
+    let config = load_config().await?;
+
+    let db = Arc::new(web::Db::open("turny.db")?);
+    db.migrate_from_config(&config.playlists)?;
+
+    let auth_manager = Arc::new(AuthManager::new(
+        config.spotify.client_id.clone(),
+        config.spotify.client_secret.clone(),
+        config.spotify.redirect_uri.clone(),
+        vec![
+            "user-read-playback-state".to_string(),
+            "user-modify-playback-state".to_string(),
+            "user-read-currently-playing".to_string(),
+            "streaming".to_string(),
+            "playlist-read-private".to_string(),
+        ],
+    ));
+
+    let state_manager = StateManager::new();
+    let (event_tx, _) = tokio::sync::broadcast::channel::<web::WebEvent>(100);
+    let (player_cmd_tx, _player_cmd_rx) =
+        tokio::sync::mpsc::channel::<web::PlayerCommand>(100);
+
+    let web_state = web::AppState {
+        db,
+        auth_manager,
+        spotify_api: web::SpotifyApi::new(),
+        event_tx,
+        player_cmd_tx,
+        state_manager,
+    };
+
+    let shutdown_signal = setup_shutdown_signal();
+
+    tokio::select! {
+        result = web::start_web_server(web_state, "0.0.0.0:8080") => {
+            if let Err(e) = result {
+                error!("Web server error: {}", e);
+            }
+        }
+        _ = shutdown_signal => {
+            info!("Shutdown signal received");
+        }
+    }
+
+    info!("Web server stopped");
     Ok(())
 }
 
@@ -389,6 +453,7 @@ async fn run_cli_mode(args: &[String]) -> Result<()> {
         "status" => handle_status_command(&args[1..]).await,
         "spotify" => handle_spotify_command(&args[1..]).await,
         "cards" => handle_cards_command(&args[1..]).await,
+        "web" => run_web_mode().await,
         "help" | "--help" | "-h" => {
             print_help();
             Ok(())
@@ -412,6 +477,7 @@ fn print_help() {
     println!("  status    Show application status");
     println!("  spotify   Spotify operations");
     println!("  cards     RFID card management");
+    println!("  web       Start web server only (no hardware required)");
     println!("  help      Show this help message");
     println!();
     println!("Run without arguments to start hardware mode.");

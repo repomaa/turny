@@ -173,7 +173,7 @@ impl Default for TurnyConfig {
             spotify: SpotifyConfig {
                 client_id: "6408760457ed45538740a3f13f369722".to_string(),
                 client_secret: "72ad08a2fe204c8894bdb1a7a8c9a866".to_string(),
-                redirect_uri: "https://jokke.space/callback".to_string(),
+                redirect_uri: "https://repomaa.github.io/turny/auth-proxy/".to_string(),
             },
             gpio: GpioConfig {
                 button_pin: 27,
@@ -199,6 +199,8 @@ impl Default for TurnyConfig {
                 scopes: vec![
                     "user-read-playback-state".to_string(),
                     "user-modify-playback-state".to_string(),
+                    "user-read-currently-playing".to_string(),
+                    "playlist-read-private".to_string(),
                 ],
                 spotifyd_service: "spotifyd".to_string(),
                 spotifyd_user_service: true,
