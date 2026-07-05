@@ -496,12 +496,13 @@ async fn load_config() -> Result<TurnyConfig> {
     // Try to load from config file first
     if let Ok(config) = TurnyConfig::from_file("config.toml") {
         info!("Loaded configuration from config.toml");
+        config.validate().context("Invalid configuration in config.toml")?;
         return Ok(config);
     }
 
     // Fall back to environment variables or defaults
     let config = TurnyConfig::from_env_or_default();
-    info!("Using configuration from environment variables or defaults");
+    info!("Using configuration from environment variables");
 
     // Validate configuration
     config.validate().context("Invalid configuration")?;

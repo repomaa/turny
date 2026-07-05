@@ -20,9 +20,9 @@ Rust Spotify RFID controller for Raspberry Pi. Single Cargo crate (binary + libr
 ## Configuration
 
 - Copy `config.toml.example` → `config.toml` in the working directory. App loads `config.toml` first, then falls back to env vars (`SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI`), then `TurnyConfig::default()`.
-- `TurnyConfig::default()` (in `src/config/mod.rs`) ships hardcoded Spotify credentials inherited from `reference.py` — do not rely on these in production; treat them as placeholders.
-- OAuth token persisted to `spotify_token.json` in the CWD. First run is interactive: app prints an OAuth URL and waits for the redirect URL on stdin.
-- RFID card IDs map to playlist URIs under `[playlists]` in `config.toml`; card IDs are hex strings produced by the MFRC522 reader (see `README_RFID.md`).
+- **Spotify credentials are not hardcoded.** You must provide `client_id` and `client_secret` via `config.toml` or env vars. The app fails at startup with a clear error if they're missing.
+- OAuth token persisted to `spotify_token.json` in the CWD. Authentication is handled via the web UI at `http://<pi-ip>:8080`; an OAuth proxy page on GitHub Pages redirects back to the Pi's origin (encoded in the `state` param).
+- RFID card IDs map to playlist URIs in a SQLite database (`turny.db`); existing `[playlists]` entries in `config.toml` are migrated automatically on first run.
 
 ## Architecture notes
 

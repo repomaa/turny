@@ -77,13 +77,98 @@ pub struct TurnyConfig {
 }
 
 impl TurnyConfig {
-    /// Load configuration from a TOML file
+    /// Load configuration from a TOML file, with defaults for missing sections
     pub fn from_file(path: &str) -> Result<Self> {
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file: {}", path))?;
 
-        let config: TurnyConfig = toml::from_str(&contents)
+        // Start from defaults, then overlay the TOML so missing sections use default values
+        let mut config = Self::default();
+        let parsed: toml::Value = toml::from_str(&contents)
             .with_context(|| format!("Failed to parse config file: {}", path))?;
+
+        if let Some(spotify) = parsed.get("spotify") {
+            if let Some(v) = spotify.get("client_id").and_then(|v| v.as_str()) {
+                config.spotify.client_id = v.to_string();
+            }
+            if let Some(v) = spotify.get("client_secret").and_then(|v| v.as_str()) {
+                config.spotify.client_secret = v.to_string();
+            }
+            if let Some(v) = spotify.get("redirect_uri").and_then(|v| v.as_str()) {
+                config.spotify.redirect_uri = v.to_string();
+            }
+        }
+
+        if let Some(gpio) = parsed.get("gpio") {
+            if let Some(v) = gpio.get("button_pin").and_then(|v| v.as_integer()) {
+                config.gpio.button_pin = v as u8;
+            }
+            if let Some(v) = gpio.get("led_pin").and_then(|v| v.as_integer()) {
+                config.gpio.led_pin = v as u8;
+            }
+            if let Some(v) = gpio.get("rfid_reset_pin").and_then(|v| v.as_integer()) {
+                config.gpio.rfid_reset_pin = v as u8;
+            }
+            if let Some(v) = gpio.get("rfid_sda_pin").and_then(|v| v.as_integer()) {
+                config.gpio.rfid_sda_pin = v as u8;
+            }
+        }
+
+        if let Some(settings) = parsed.get("settings") {
+            if let Some(v) = settings.get("poll_interval").and_then(|v| v.as_integer()) {
+                config.settings.poll_interval = v as u64;
+            }
+            if let Some(v) = settings.get("default_volume").and_then(|v| v.as_integer()) {
+                config.settings.default_volume = v as u8;
+            }
+            if let Some(v) = settings.get("absence_threshold").and_then(|v| v.as_integer()) {
+                config.settings.absence_threshold = v as u8;
+            }
+        }
+
+        if let Some(playlists) = parsed.get("playlists").and_then(|v| v.as_table()) {
+            for (card_id, uri) in playlists {
+                if let Some(uri_str) = uri.as_str() {
+                    config.playlists.insert(card_id.clone(), uri_str.to_string());
+                }
+            }
+        }
+
+        if let Some(audio) = parsed.get("audio") {
+            if let Some(v) = audio.get("startup_sound").and_then(|v| v.as_str()) {
+                config.audio.startup_sound = v.to_string();
+            }
+            if let Some(v) = audio.get("audio_player").and_then(|v| v.as_str()) {
+                config.audio.audio_player = v.to_string();
+            }
+        }
+
+        if let Some(logging) = parsed.get("logging") {
+            if let Some(v) = logging.get("level").and_then(|v| v.as_str()) {
+                config.logging.level = v.to_string();
+            }
+            if let Some(v) = logging.get("file").and_then(|v| v.as_str()) {
+                config.logging.file = Some(v.to_string());
+            }
+        }
+
+        if let Some(advanced) = parsed.get("advanced") {
+            if let Some(v) = advanced.get("scopes").and_then(|v| v.as_array()) {
+                config.advanced.scopes = v.iter().filter_map(|s| s.as_str().map(String::from)).collect();
+            }
+            if let Some(v) = advanced.get("spotifyd_service").and_then(|v| v.as_str()) {
+                config.advanced.spotifyd_service = v.to_string();
+            }
+            if let Some(v) = advanced.get("spotifyd_user_service").and_then(|v| v.as_bool()) {
+                config.advanced.spotifyd_user_service = v;
+            }
+            if let Some(v) = advanced.get("max_heartbeat_retries").and_then(|v| v.as_integer()) {
+                config.advanced.max_heartbeat_retries = v as u32;
+            }
+            if let Some(v) = advanced.get("retry_delay_multiplier").and_then(|v| v.as_float()) {
+                config.advanced.retry_delay_multiplier = v;
+            }
+        }
 
         Ok(config)
     }
@@ -137,11 +222,15 @@ impl TurnyConfig {
     /// Validate the configuration
     pub fn validate(&self) -> Result<()> {
         if self.spotify.client_id.is_empty() {
-            return Err(anyhow::anyhow!("Spotify client ID is required"));
+            return Err(anyhow::anyhow!(
+                "Spotify client ID is required. Set it via SPOTIFY_CLIENT_ID env var or config.toml"
+            ));
         }
 
         if self.spotify.client_secret.is_empty() {
-            return Err(anyhow::anyhow!("Spotify client secret is required"));
+            return Err(anyhow::anyhow!(
+                "Spotify client secret is required. Set it via SPOTIFY_CLIENT_SECRET env var or config.toml"
+            ));
         }
 
         if self.spotify.redirect_uri.is_empty() {
@@ -171,8 +260,8 @@ impl Default for TurnyConfig {
 
         Self {
             spotify: SpotifyConfig {
-                client_id: "6408760457ed45538740a3f13f369722".to_string(),
-                client_secret: "72ad08a2fe204c8894bdb1a7a8c9a866".to_string(),
+                client_id: String::new(),
+                client_secret: String::new(),
                 redirect_uri: "https://repomaa.github.io/turny/auth-proxy/".to_string(),
             },
             gpio: GpioConfig {
@@ -218,8 +307,8 @@ mod tests {
     #[test]
     fn test_config_default() {
         let config = TurnyConfig::default();
-        assert!(!config.spotify.client_id.is_empty());
-        assert!(!config.spotify.client_secret.is_empty());
+        assert!(config.spotify.client_id.is_empty());
+        assert!(config.spotify.client_secret.is_empty());
         assert!(!config.spotify.redirect_uri.is_empty());
         assert!(!config.playlists.is_empty());
         assert_eq!(config.audio.startup_sound, "startup.wav");
@@ -228,13 +317,14 @@ mod tests {
     #[test]
     fn test_config_validation() {
         let config = TurnyConfig::default();
-        assert!(config.validate().is_ok());
+        assert!(config.validate().is_err()); // empty client_id/secret
 
-        let mut invalid_config = config.clone();
-        invalid_config.spotify.client_id = String::new();
-        assert!(invalid_config.validate().is_err());
+        let mut valid_config = config.clone();
+        valid_config.spotify.client_id = "test_id".to_string();
+        valid_config.spotify.client_secret = "test_secret".to_string();
+        assert!(valid_config.validate().is_ok());
 
-        let mut invalid_uri_config = config.clone();
+        let mut invalid_uri_config = valid_config.clone();
         invalid_uri_config.spotify.redirect_uri = "not-a-url".to_string();
         assert!(invalid_uri_config.validate().is_err());
     }

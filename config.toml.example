@@ -1,11 +1,12 @@
 # Turny Spotify RFID Controller Configuration
 # Copy this file to config.toml and update with your values
+# Alternatively, set env vars: SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REDIRECT_URI
 
 [spotify]
 # Spotify API credentials - get these from https://developer.spotify.com/dashboard
 client_id = "your_spotify_client_id_here"
 client_secret = "your_spotify_client_secret_here"
-redirect_uri = "http://localhost:8888/callback"
+redirect_uri = "https://repomaa.github.io/turny/auth-proxy/"
 
 [gpio]
 # GPIO pin assignments

@@ -50,7 +50,7 @@ mod tests {
     #[test]
     fn test_config_creation() {
         let config = TurnyConfig::default();
-        assert!(config.validate().is_ok());
+        assert!(config.validate().is_err()); // no credentials by default
     }
 
     #[test]
