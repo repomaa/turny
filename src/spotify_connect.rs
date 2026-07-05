@@ -91,7 +91,7 @@ impl SpotifyConnect {
         let connect_config = ConnectConfig {
             name: self.device_name.clone(),
             device_type: DeviceType::Speaker,
-            initial_volume: 50,
+            initial_volume: u16::MAX / 2,
             is_group: false,
             ..Default::default()
         };
