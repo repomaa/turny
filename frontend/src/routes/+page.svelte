@@ -116,7 +116,6 @@
 	async function loadPlaylists() {
 		try {
 			playlists = await getPlaylists();
-			await loadCards();
 		} catch {
 			// ignore
 		}
@@ -230,8 +229,7 @@
 	onMount(() => {
 		checkAuth().then(() => {
 			if (authenticated) {
-				loadCards();
-				loadPlaylists();
+				loadPlaylists().then(() => loadCards());
 				refreshNowPlaying();
 				loadVolume();
 			}
@@ -262,9 +260,8 @@
 	// Reload data when authentication changes
 	$effect(() => {
 		if (authenticated) {
-			loadCards();
-			loadPlaylists();
-			if (volume === null) loadVolume();
+			loadPlaylists().then(() => loadCards());
+			loadVolume();
 		}
 	});
 </script>
