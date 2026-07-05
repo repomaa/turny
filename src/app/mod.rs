@@ -48,12 +48,7 @@ impl TurnyApp {
             config.spotify.client_id.clone(),
             config.spotify.client_secret.clone(),
             config.spotify.redirect_uri.clone(),
-            vec![
-                "user-read-playback-state".to_string(),
-                "user-modify-playback-state".to_string(),
-                "user-read-currently-playing".to_string(),
-                "streaming".to_string(),
-            ],
+            config.advanced.scopes.clone(),
         ));
 
         info!("Turny application initialized successfully");

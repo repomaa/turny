@@ -134,7 +134,7 @@ impl Mfrc522RfidReader {
 
     /// Perform the actual card reading operation
     fn read_card_internal(&mut self) -> Result<Option<String>> {
-        match self.mfrc522.reqa() {
+        match self.mfrc522.wupa() {
             Ok(atqa) => {
                 match self.mfrc522.select(&atqa) {
                     Ok(uid) => {

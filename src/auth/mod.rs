@@ -267,6 +267,11 @@ impl AuthManager {
             *token_guard = Some(token_info.clone());
         }
 
+        // Persist refreshed token to file
+        if let Err(e) = self.save_token_to_file(&token_info) {
+            error!("Failed to save refreshed token to file: {}", e);
+        }
+
         info!("Successfully refreshed access token");
         Ok(token_info)
     }

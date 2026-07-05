@@ -286,6 +286,7 @@ impl Default for TurnyConfig {
             },
             advanced: AdvancedConfig {
                 scopes: vec![
+                    "streaming".to_string(),
                     "user-read-playback-state".to_string(),
                     "user-modify-playback-state".to_string(),
                     "user-read-currently-playing".to_string(),
