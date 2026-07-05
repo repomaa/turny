@@ -107,7 +107,6 @@ impl Mfrc522RfidReader {
     
     /// Perform the actual card reading operation
     fn read_card_internal(&mut self) -> Result<Option<String>> {
-        // Create a simplified MFRC522 interface for each read
         let itf = SpiInterface::new(&mut self.spi);
         match Mfrc522::new(itf).init() {
             Ok(mut mfrc522) => {
@@ -115,27 +114,34 @@ impl Mfrc522RfidReader {
                     Ok(atqa) => {
                         match mfrc522.select(&atqa) {
                             Ok(uid) => {
-                                // Convert UID bytes to string
                                 let uid_bytes = uid.as_bytes();
                                 let uid_string = uid_bytes.iter()
                                     .map(|b| format!("{:02x}", b))
                                     .collect::<Vec<_>>()
                                     .join("");
-                                
+
                                 debug!("RFID card detected: {}", uid_string);
-                                
-                                // Halt the card to prevent repeated reads
+
                                 let _ = mfrc522.hlta();
                                 
                                 Ok(Some(uid_string))
                             }
-                            Err(_) => Ok(None),
+                            Err(e) => {
+                                debug!("RFID select failed: {:?}", e);
+                                Ok(None)
+                            }
                         }
                     }
-                    Err(_) => Ok(None),
+                    Err(e) => {
+                        debug!("RFID REQA failed: {:?}", e);
+                        Ok(None)
+                    }
                 }
             }
-            Err(_) => Ok(None),
+            Err(e) => {
+                debug!("RFID init failed: {:?}", e);
+                Ok(None)
+            }
         }
     }
     
