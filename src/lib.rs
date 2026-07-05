@@ -15,7 +15,6 @@ pub mod auth;
 pub mod config;
 pub mod hardware;
 pub mod spotify_connect;
-pub mod spotify_player;
 pub mod state;
 
 // Re-export commonly used types for convenience
@@ -24,7 +23,6 @@ pub use auth::{AuthManager, TokenInfo};
 pub use config::TurnyConfig;
 pub use hardware::{ButtonEvent, HardwareManager};
 pub use spotify_connect::SpotifyConnect;
-pub use spotify_player::SpotifyPlayerManager;
 pub use state::{StateManager, TurnyState};
 
 /// Common result type used throughout the library

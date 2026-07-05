@@ -1873,7 +1873,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ed1f776a04c8c9275407f8d4df034f2615ea729ec6c6d0fa69f423fc571df64"
 dependencies = [
- "cpal",
+ "alsa",
  "futures-util",
  "librespot-audio",
  "librespot-core",
@@ -1882,7 +1882,6 @@ dependencies = [
  "parking_lot",
  "rand 0.8.5",
  "rand_distr",
- "rodio 0.19.0",
  "shell-words",
  "symphonia",
  "thiserror 1.0.69",
@@ -2833,16 +2832,6 @@ dependencies = [
  "hound",
  "lewton",
  "symphonia",
-]
-
-[[package]]
-name = "rodio"
-version = "0.19.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6006a627c1a38d37f3d3a85c6575418cfe34a5392d60a686d0071e1c8d427acb"
-dependencies = [
- "cpal",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3907,7 +3896,7 @@ dependencies = [
  "log",
  "mfrc522",
  "reqwest 0.12.22",
- "rodio 0.17.3",
+ "rodio",
  "rppal",
  "rustls 0.23.28",
  "serde",

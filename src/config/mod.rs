@@ -9,7 +9,7 @@ pub const LED_PIN: u8 = 22;
 pub const RFID_RESET_PIN: u8 = 25;
 
 // Timing constants
-pub const POLL_INTERVAL: Duration = Duration::from_millis(50);
+pub const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 // Button press duration thresholds
 pub const MANUAL_RESET_THRESHOLD: Duration = Duration::from_secs(5);

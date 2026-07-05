@@ -4,8 +4,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// OAuth token information
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,7 +175,7 @@ impl AuthManager {
 
         // Store the token
         {
-            let mut token_guard = self.token_info.lock().await;
+            let mut token_guard = self.token_info.lock().unwrap();
             *token_guard = Some(token_info.clone());
         }
 
@@ -187,7 +186,7 @@ impl AuthManager {
     /// Refresh access token using refresh token
     pub async fn refresh_token(&self) -> Result<TokenInfo> {
         let current_token = {
-            let token_guard = self.token_info.lock().await;
+            let token_guard = self.token_info.lock().unwrap();
             token_guard.clone()
         };
 
@@ -259,7 +258,7 @@ impl AuthManager {
 
         // Store the updated token
         {
-            let mut token_guard = self.token_info.lock().await;
+            let mut token_guard = self.token_info.lock().unwrap();
             *token_guard = Some(token_info.clone());
         }
 
@@ -269,16 +268,16 @@ impl AuthManager {
 
     /// Get current token info
     pub async fn get_token_info(&self) -> Option<TokenInfo> {
-        let token_guard = self.token_info.lock().await;
+        let token_guard = self.token_info.lock().unwrap();
         token_guard.clone()
     }
 
-    /// Set token info manually
     /// Set token information
     pub async fn set_token_info(&self, token_info: TokenInfo) {
-        let mut token = self.token_info.lock().await;
-        *token = Some(token_info.clone());
-        drop(token);
+        {
+            let mut token = self.token_info.lock().unwrap();
+            *token = Some(token_info.clone());
+        }
 
         // Save to file
         if let Err(e) = self.save_token_to_file(&token_info) {
@@ -288,7 +287,7 @@ impl AuthManager {
 
     /// Check if we have a valid token
     pub async fn has_valid_token(&self) -> bool {
-        let token_guard = self.token_info.lock().await;
+        let token_guard = self.token_info.lock().unwrap();
         match &*token_guard {
             Some(token) => !token.is_expired(),
             None => false,
@@ -316,9 +315,10 @@ impl AuthManager {
 
     /// Clear stored token
     pub async fn clear_token(&self) {
-        let mut token = self.token_info.lock().await;
-        *token = None;
-        drop(token);
+        {
+            let mut token = self.token_info.lock().unwrap();
+            *token = None;
+        }
 
         // Remove token file
         if let Err(e) = std::fs::remove_file(&self.token_file_path) {
@@ -346,12 +346,10 @@ impl AuthManager {
             serde_json::from_str(&json).context("Failed to deserialize token")?;
 
         // Set the token in memory
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let mut token = self.token_info.lock().await;
-                *token = Some(token_info);
-            })
-        });
+        {
+            let mut token = self.token_info.lock().unwrap();
+            *token = Some(token_info);
+        }
 
         info!("Token loaded from file: {:?}", self.token_file_path);
         Ok(())

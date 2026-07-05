@@ -3,9 +3,9 @@ use embedded_hal_bus::spi::ExclusiveDevice;
 use linux_embedded_hal as hal;
 use hal::spidev::{SpiModeFlags, SpidevOptions};
 use hal::{Delay, SpidevBus};
-use log::{debug, info};
-use mfrc522::comm::blocking::spi::SpiInterface;
-use mfrc522::Mfrc522;
+use log::{debug, info, warn};
+use mfrc522::comm::blocking::spi::{DummyDelay, SpiInterface};
+use mfrc522::{Initialized, Mfrc522};
 use rppal::gpio::{Gpio, OutputPin};
 use std::time::{Duration, Instant};
 
@@ -53,9 +53,12 @@ pub trait RfidReader {
     fn read_card_id(&mut self) -> Option<String>;
 }
 
+type Mfrc522Device =
+    Mfrc522<SpiInterface<ExclusiveDevice<SpidevBus, CsPin, Delay>, DummyDelay>, Initialized>;
+
 /// MFRC522 RFID reader implementation
 pub struct Mfrc522RfidReader {
-    spi: ExclusiveDevice<SpidevBus, CsPin, Delay>,
+    mfrc522: Mfrc522Device,
     _rst_pin: OutputPin,
     last_read_time: Option<Instant>,
     read_cooldown: Duration,
@@ -96,19 +99,31 @@ impl Mfrc522RfidReader {
         rst_pin.set_high();
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        // Create SPI device
+        // Create SPI device and MFRC522 interface, init once
         let spi = ExclusiveDevice::new(spi, CsPin(cs_pin), Delay)?;
+        let itf = SpiInterface::new(spi);
 
         info!("MFRC522 SPI interface initialized (RST on GPIO 25)");
 
+        let mfrc522 = match Mfrc522::new(itf).init() {
+            Ok(m) => {
+                info!("MFRC522 initialized successfully");
+                m
+            }
+            Err(e) => {
+                warn!("MFRC522 init failed: {:?}, continuing anyway", e);
+                return Err(anyhow::anyhow!("MFRC522 initialization failed: {:?}", e));
+            }
+        };
+
         Ok(Self {
-            spi,
+            mfrc522,
             _rst_pin: rst_pin,
             last_read_time: None,
             read_cooldown: Duration::from_millis(500),
         })
     }
-    
+
     /// Check if enough time has passed since last read
     fn can_read(&self) -> bool {
         match self.last_read_time {
@@ -116,48 +131,37 @@ impl Mfrc522RfidReader {
             None => true,
         }
     }
-    
+
     /// Perform the actual card reading operation
     fn read_card_internal(&mut self) -> Result<Option<String>> {
-        let itf = SpiInterface::new(&mut self.spi);
-        match Mfrc522::new(itf).init() {
-            Ok(mut mfrc522) => {
-                match mfrc522.reqa() {
-                    Ok(atqa) => {
-                        match mfrc522.select(&atqa) {
-                            Ok(uid) => {
-                                let uid_bytes = uid.as_bytes();
-                                let uid_string = uid_bytes.iter()
-                                    .map(|b| format!("{:02x}", b))
-                                    .collect::<Vec<_>>()
-                                    .join("");
+        match self.mfrc522.reqa() {
+            Ok(atqa) => {
+                match self.mfrc522.select(&atqa) {
+                    Ok(uid) => {
+                        let uid_bytes = uid.as_bytes();
+                        let uid_string = uid_bytes.iter()
+                            .map(|b| format!("{:02x}", b))
+                            .collect::<Vec<_>>()
+                            .join("");
 
-                                debug!("RFID card detected: {}", uid_string);
+                        debug!("RFID card detected: {}", uid_string);
 
-                                let _ = mfrc522.hlta();
-                                
-                                Ok(Some(uid_string))
-                            }
-                            Err(e) => {
-                                debug!("RFID select failed: {:?}", e);
-                                Ok(None)
-                            }
-                        }
+                        let _ = self.mfrc522.hlta();
+
+                        Ok(Some(uid_string))
                     }
                     Err(e) => {
-                        debug!("RFID REQA failed: {:?}", e);
+                        debug!("RFID select failed: {:?}", e);
                         Ok(None)
                     }
                 }
             }
             Err(e) => {
-                debug!("RFID init failed: {:?}", e);
+                debug!("RFID REQA failed: {:?}", e);
                 Ok(None)
             }
         }
     }
-    
-
 }
 
 impl RfidReader for Mfrc522RfidReader {
@@ -170,11 +174,11 @@ impl RfidReader for Mfrc522RfidReader {
         match self.read_card_internal() {
             Ok(card_id) => {
                 self.last_read_time = Some(Instant::now());
-                
+
                 if let Some(ref id) = card_id {
                     info!("RFID card detected: {}", id);
                 }
-                
+
                 card_id
             }
             Err(e) => {
@@ -183,8 +187,6 @@ impl RfidReader for Mfrc522RfidReader {
             }
         }
     }
-    
-
 }
 
 /// Create a mock RFID reader for testing
@@ -204,7 +206,7 @@ impl MockRfidReader {
             available: true,
         }
     }
-    
+
     pub fn with_cards(cards: Vec<String>) -> Self {
         Self {
             cards,
@@ -212,15 +214,15 @@ impl MockRfidReader {
             available: true,
         }
     }
-    
+
     pub fn set_available(&mut self, available: bool) {
         self.available = available;
     }
-    
+
     pub fn add_card(&mut self, card_id: String) {
         self.cards.push(card_id);
     }
-    
+
     pub fn clear_cards(&mut self) {
         self.cards.clear();
         self.current_index = 0;
@@ -233,13 +235,11 @@ impl RfidReader for MockRfidReader {
         if !self.available || self.cards.is_empty() {
             return None;
         }
-        
+
         let card_id = self.cards[self.current_index].clone();
         self.current_index = (self.current_index + 1) % self.cards.len();
         Some(card_id)
     }
-    
-
 }
 
 #[cfg(test)]
@@ -261,11 +261,10 @@ mod tests {
             "card3".to_string(),
         ];
         let mut reader = MockRfidReader::with_cards(cards.clone());
-        
+
         assert_eq!(reader.read_card_id(), Some("card1".to_string()));
         assert_eq!(reader.read_card_id(), Some("card2".to_string()));
         assert_eq!(reader.read_card_id(), Some("card3".to_string()));
-        // Should cycle back to the first card
         assert_eq!(reader.read_card_id(), Some("card1".to_string()));
     }
 
@@ -273,9 +272,9 @@ mod tests {
     fn test_mock_rfid_reader_availability() {
         let mut reader = MockRfidReader::new();
         reader.add_card("test_card".to_string());
-        
+
         assert_eq!(reader.read_card_id(), Some("test_card".to_string()));
-        
+
         reader.set_available(false);
         assert_eq!(reader.read_card_id(), None);
     }
@@ -289,13 +288,13 @@ mod tests {
     #[test]
     fn test_mock_rfid_reader_add_clear_cards() {
         let mut reader = MockRfidReader::new();
-        
+
         reader.add_card("card1".to_string());
         reader.add_card("card2".to_string());
-        
+
         assert_eq!(reader.read_card_id(), Some("card1".to_string()));
         assert_eq!(reader.read_card_id(), Some("card2".to_string()));
-        
+
         reader.clear_cards();
         assert_eq!(reader.read_card_id(), None);
     }
@@ -305,7 +304,7 @@ mod tests {
         let mut reader: Box<dyn RfidReader> = Box::new(MockRfidReader::with_cards(vec![
             "test_card".to_string(),
         ]));
-        
+
         assert_eq!(reader.read_card_id(), Some("test_card".to_string()));
     }
 }

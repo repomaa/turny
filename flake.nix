@@ -137,7 +137,7 @@
                 udev
               ];
 
-              CARGO_PROFILE = "dev";
+              buildType = "debug";
 
               meta = with pkgs.lib; {
                 description = "Turny Spotify RFID Controller (native build)";

@@ -10,7 +10,6 @@ mod auth;
 mod config;
 mod hardware;
 mod spotify_connect;
-mod spotify_player;
 mod state;
 
 use app::TurnyApp;
