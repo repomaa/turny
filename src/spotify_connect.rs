@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use librespot::core::{
     authentication::Credentials,
-    cache::Cache,
     config::SessionConfig,
     session::Session,
 };
@@ -14,7 +13,7 @@ use librespot::playback::{
     audio_backend,
     config::{AudioFormat, PlayerConfig, Bitrate},
     player::Player,
-    mixer::{self, NoOpVolume},
+    mixer,
 };
 use log::info;
 
@@ -46,80 +45,57 @@ impl SpotifyConnect {
     }
 
     pub async fn initialize(&mut self) -> Result<()> {
+        use librespot::playback::mixer::MixerConfig;
         info!("Initializing Spotify Connect with librespot...");
 
-        // Create session config
         let session_config = SessionConfig::default();
-        
-        // Create cache directory
-        let cache_dir = std::path::PathBuf::from("/tmp/librespot_cache");
-        std::fs::create_dir_all(&cache_dir).context("Failed to create cache directory")?;
-        
-        // Create cache with proper type annotations
-        let cache = Cache::new(
-            None::<std::path::PathBuf>, 
-            None::<std::path::PathBuf>, 
-            None::<std::path::PathBuf>, 
-            None::<u64>
-        ).context("Failed to create cache")?;
+        let session = Session::new(session_config, None);
 
-        // Create credentials with OAuth token
         let credentials = if let Some(token) = &self.access_token {
             Credentials::with_access_token(token)
         } else {
             return Err(anyhow::anyhow!("No access token available. Please authenticate first."));
         };
 
-        // Create session
-        let session = Session::new(session_config, Some(cache));
-        
-        // Connect to Spotify
-        session.connect(credentials, false).await
-            .context("Failed to connect to Spotify")?;
-
-        // Create audio backend (ALSA for Raspberry Pi)
         let backend = audio_backend::find(Some("alsa".to_string()))
             .context("Failed to find ALSA audio backend")?;
 
-        // Create player config with minimal settings
         let player_config = PlayerConfig {
             bitrate: Bitrate::Bitrate160,
             gapless: true,
             ..Default::default()
         };
 
-        // Create audio format
         let audio_format = AudioFormat::default();
 
-        // Create player with NoOpVolume
+        let mixer_builder = mixer::find(Some("softvol")).context("Failed to find softvol mixer")?;
+        let mixer = mixer_builder(MixerConfig::default());
+
         let player = Player::new(
             player_config,
             session.clone(),
-            Box::new(NoOpVolume),
+            mixer.get_soft_volume(),
             move || backend(None, audio_format),
         );
 
-        // Create connect config
         let connect_config = ConnectConfig {
             name: self.device_name.clone(),
             device_type: DeviceType::Speaker,
             initial_volume: Some(50),
-            has_volume_ctrl: false, // Disable volume control for simplicity
+            has_volume_ctrl: false,
             is_group: false,
         };
 
-        // Create Spirc (Spotify Connect controller)
-        let (_spirc, spirc_task) = Spirc::new(
+        let (spirc, spirc_task) = Spirc::new(
             connect_config,
             session.clone(),
-            // Empty credentials for now - this might need to be the same as session credentials
-            Credentials::with_access_token(self.access_token.as_ref().unwrap()),
+            credentials,
             player,
-            // Simple mixer that doesn't do anything
-            mixer::find(Some("softvol")).unwrap()(Default::default()),
+            mixer,
         ).await.context("Failed to create Spirc")?;
 
-        // Store session and spawn the spirc task
+        let _ = spirc;
+
         self._session = Some(session);
         self._spirc_task = Some(tokio::spawn(spirc_task));
 
