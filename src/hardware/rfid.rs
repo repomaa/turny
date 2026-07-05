@@ -85,6 +85,16 @@ impl Mfrc522RfidReader {
             .into_output();
         cs_pin.set_high();
 
+        // Bring MFRC522 out of reset (RST pin on GPIO 25, active high)
+        let mut rst_pin = gpio
+            .get(crate::config::RFID_RESET_PIN)
+            .with_context(|| format!("Failed to get GPIO pin {}", crate::config::RFID_RESET_PIN))?
+            .into_output();
+        rst_pin.set_low();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        rst_pin.set_high();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
         // Create SPI device
         let spi = ExclusiveDevice::new(spi, CsPin(cs_pin), Delay)?;
 

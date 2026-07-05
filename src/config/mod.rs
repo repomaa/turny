@@ -6,6 +6,7 @@ use std::time::Duration;
 // Hardware configuration constants
 pub const BUTTON_PIN: u8 = 27;
 pub const LED_PIN: u8 = 22;
+pub const RFID_RESET_PIN: u8 = 25;
 
 // Timing constants
 pub const POLL_INTERVAL: Duration = Duration::from_millis(50);
