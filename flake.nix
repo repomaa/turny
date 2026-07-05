@@ -53,7 +53,7 @@
             };
           };
         perSystem =
-          { pkgs, ... }:
+          { pkgs, config, ... }:
           {
             devShells.default = pkgs.mkShell {
               buildInputs = with pkgs; [
@@ -114,6 +114,24 @@
               # '';
             };
 
+            packages.frontend = pkgs.buildNpmPackage {
+              pname = "turny-frontend";
+              version = "0.1.0";
+
+              src = ./frontend;
+
+              npmDepsHash = "sha512-OiMNUjiVdKBPlrYZMdWPmpOcO4E1NzE9+m2ihWzdZcKmcjsE4y/tfCZ3f0mfiWHEKiwFWW2yumCNcap3Obkciw==";
+
+              dontNpmBuild = false;
+
+              installPhase = ''
+                runHook preInstall
+                mkdir -p $out
+                cp -r build/* $out/
+                runHook postInstall
+              '';
+            };
+
             packages.default = pkgs.rustPlatform.buildRustPackage {
               pname = "turny";
               version = "0.1.0";
@@ -138,6 +156,11 @@
               ];
 
               buildType = "debug";
+
+              preConfigure = ''
+                mkdir -p frontend/build
+                cp -r ${config.packages.frontend}/* frontend/build/
+              '';
 
               meta = with pkgs.lib; {
                 description = "Turny Spotify RFID Controller (native build)";
