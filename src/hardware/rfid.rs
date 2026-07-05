@@ -99,7 +99,7 @@ impl Mfrc522RfidReader {
         // Create SPI device
         let spi = ExclusiveDevice::new(spi, CsPin(cs_pin), Delay)?;
 
-        info!("MFRC522 SPI interface initialized (RST shared with LED on GPIO 22)");
+        info!("MFRC522 SPI interface initialized (RST on GPIO 25)");
 
         Ok(Self {
             spi,
