@@ -62,15 +62,16 @@ uuid = { version = "1.0", features = ["v4"] }
 rodio = "0.17"
 
 # Librespot - Spotify Connect integration
-librespot = { version = "0.6", default-features = false, features = [
+librespot = { version = "0.8", default-features = false, features = [
+    "alsa-backend",
+    "rustls-tls-native-roots",
+] }
+librespot-core = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-connect = { version = "0.8", default-features = false }
+librespot-playback = { version = "0.8", default-features = false, features = [
     "alsa-backend",
 ] }
-librespot-core = { version = "0.6", default-features = false }
-librespot-connect = { version = "0.6", default-features = false }
-librespot-playback = { version = "0.6", default-features = false, features = [
-    "alsa-backend",
-] }
-librespot-oauth = { version = "0.6", default-features = false }
+librespot-oauth = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
 
 # Web server
 axum = { version = "0.7", features = ["ws"] }

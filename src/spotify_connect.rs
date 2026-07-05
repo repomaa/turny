@@ -3,11 +3,11 @@ use librespot::core::{
     authentication::Credentials,
     config::SessionConfig,
     session::Session,
-    spotify_id::SpotifyId,
+    spotify_uri::SpotifyUri,
 };
 use librespot::connect::{
-    config::ConnectConfig,
-    spirc::{Spirc, SpircLoadCommand},
+    LoadRequest, LoadRequestOptions,
+    ConnectConfig, Spirc,
 };
 use librespot::discovery::DeviceType;
 use librespot::metadata::{Playlist, Metadata};
@@ -17,7 +17,6 @@ use librespot::playback::{
     player::Player,
     mixer,
 };
-use librespot::protocol::spirc::TrackRef;
 use log::{info, warn};
 
 pub struct SpotifyConnect {
@@ -79,7 +78,8 @@ impl SpotifyConnect {
 
         let mixer_builder =
             mixer::find(Some("softvol")).context("Failed to find softvol mixer")?;
-        let mixer = mixer_builder(MixerConfig::default());
+        let mixer = mixer_builder(MixerConfig::default())
+            .context("Failed to create mixer")?;
 
         let player = Player::new(
             player_config,
@@ -91,9 +91,9 @@ impl SpotifyConnect {
         let connect_config = ConnectConfig {
             name: self.device_name.clone(),
             device_type: DeviceType::Speaker,
-            initial_volume: Some(50),
-            has_volume_ctrl: false,
+            initial_volume: 50,
             is_group: false,
+            ..Default::default()
         };
 
         let (spirc, spirc_task) = Spirc::new(
@@ -166,39 +166,31 @@ impl SpotifyConnect {
             .as_ref()
             .context("Session not available")?;
 
-        let playlist_id = SpotifyId::from_uri(playlist_uri)
+        let uri = SpotifyUri::from_uri(playlist_uri)
             .context("Invalid playlist URI")?;
 
-        let tracks = Playlist::get(session, &playlist_id)
+        let playlist = Playlist::get(session, &uri)
             .await
             .context("Failed to get playlist")?;
 
-        let track_refs: Vec<TrackRef> = tracks
-            .tracks()
-            .map(|track_id| {
-                let mut track_ref = TrackRef::new();
-                track_ref.set_gid(track_id.to_raw().to_vec());
-                track_ref
-            })
-            .collect();
+        let track_count = playlist.tracks().count();
 
-        if track_refs.is_empty() {
+        if track_count == 0 {
             return Err(anyhow::anyhow!("Playlist is empty"));
         }
 
-        let command = SpircLoadCommand {
-            context_uri: playlist_uri.to_string(),
-            start_playing: true,
-            shuffle: false,
-            repeat: false,
-            playing_track_index: 0,
-            tracks: track_refs,
-        };
+        let request = LoadRequest::from_context_uri(
+            playlist_uri.to_string(),
+            LoadRequestOptions {
+                start_playing: true,
+                ..Default::default()
+            },
+        );
 
         spirc.activate().context("Failed to activate Spirc")?;
-        spirc.load(command).context("Failed to load playlist via Spirc")?;
+        spirc.load(request).context("Failed to load playlist via Spirc")?;
 
-        info!("Loaded playlist via Spirc: {}", playlist_uri);
+        info!("Loaded playlist via Spirc: {} ({} tracks)", playlist_uri, track_count);
         Ok(())
     }
 
@@ -223,7 +215,7 @@ impl SpotifyConnect {
     }
 
     pub fn validate_playlist(&self, playlist_uri: &str) -> bool {
-        SpotifyId::from_uri(playlist_uri).is_ok()
+        SpotifyUri::from_uri(playlist_uri).is_ok()
     }
 }
 
