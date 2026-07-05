@@ -250,14 +250,6 @@ impl TurnyConfig {
 
 impl Default for TurnyConfig {
     fn default() -> Self {
-        let mut playlists = HashMap::new();
-
-        // Default mapping for testing
-        playlists.insert(
-            "383951559086".to_string(),
-            "spotify:playlist:4Y6ZFtrQX7vuKVGLbNQ5sN".to_string(),
-        );
-
         Self {
             spotify: SpotifyConfig {
                 client_id: String::new(),
@@ -275,7 +267,7 @@ impl Default for TurnyConfig {
                 default_volume: 70,
                 absence_threshold: 5,
             },
-            playlists,
+            playlists: HashMap::new(),
             audio: AudioConfig {
                 startup_sound: "startup.wav".to_string(),
                 audio_player: "aplay".to_string(),
@@ -311,7 +303,7 @@ mod tests {
         assert!(config.spotify.client_id.is_empty());
         assert!(config.spotify.client_secret.is_empty());
         assert!(!config.spotify.redirect_uri.is_empty());
-        assert!(!config.playlists.is_empty());
+        assert!(config.playlists.is_empty());
         assert_eq!(config.audio.startup_sound, "startup.wav");
     }
 

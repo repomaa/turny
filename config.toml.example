@@ -38,10 +38,9 @@ absence_threshold = 3
 # 1. Run the program in debug mode
 # 2. Place the card on the reader
 # 3. Check the logs for the card ID
-
-"383951559086" = "spotify:playlist:4Y6ZFtrQX7vuKVGLbNQ5sN"
-"123456789012" = "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M"
-"987654321098" = "spotify:playlist:37i9dQZF1DX0XUsuxWHRQd"
+#
+# Note: Card mappings are managed via the web UI and stored in the SQLite database.
+# Entries here are migrated to the database on first run only.
 
 [audio]
 startup_sound = "startup.wav"
