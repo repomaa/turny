@@ -56,6 +56,7 @@ pub trait RfidReader {
 /// MFRC522 RFID reader implementation
 pub struct Mfrc522RfidReader {
     spi: ExclusiveDevice<SpidevBus, CsPin, Delay>,
+    _rst_pin: OutputPin,
     last_read_time: Option<Instant>,
     read_cooldown: Duration,
 }
@@ -102,8 +103,9 @@ impl Mfrc522RfidReader {
 
         Ok(Self {
             spi,
+            _rst_pin: rst_pin,
             last_read_time: None,
-            read_cooldown: Duration::from_millis(500), // Prevent rapid re-reads
+            read_cooldown: Duration::from_millis(500),
         })
     }
     
