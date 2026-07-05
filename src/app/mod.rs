@@ -199,8 +199,20 @@ impl TurnyApp {
 
         // Broadcast RFID detected event
         if let Some(tx) = &self.event_tx {
+            let existing_mapping = if let Some(db) = &self.db {
+                db.get_mapping_for_card(&card_id)
+                    .ok()
+                    .flatten()
+                    .map(|m| crate::web::events::ExistingMapping {
+                        playlist_uri: m.playlist_uri,
+                        playlist_name: m.playlist_name,
+                    })
+            } else {
+                None
+            };
             let _ = tx.send(WebEvent::RfidDetected {
                 card_id: card_id.clone(),
+                existing_mapping,
             });
         }
 

@@ -72,6 +72,35 @@ impl Db {
         Ok(result)
     }
 
+    pub fn get_mapping_for_card(&self, card_id: &str) -> Result<Option<CardMapping>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("DB lock error: {}", e))?;
+        let mut stmt = conn
+            .prepare("SELECT card_id, playlist_uri, playlist_name FROM card_mappings WHERE card_id = ?1")
+            .context("Failed to prepare query")?;
+        let result = stmt
+            .query_row(rusqlite::params![card_id], |row| {
+                Ok(CardMapping {
+                    card_id: row.get(0)?,
+                    playlist_uri: row.get(1)?,
+                    playlist_name: row.get(2)?,
+                })
+            })
+            .optional()?;
+        Ok(result)
+    }
+
+    pub fn backfill_playlist_names(&self, uri_to_name: &std::collections::HashMap<String, String>) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("DB lock error: {}", e))?;
+        for (uri, name) in uri_to_name {
+            conn.execute(
+                "UPDATE card_mappings SET playlist_name = ?1 WHERE playlist_uri = ?2 AND playlist_name IS NULL",
+                rusqlite::params![name, uri],
+            )
+            .context("Failed to backfill playlist name")?;
+        }
+        Ok(())
+    }
+
     pub fn get_all_mappings(&self) -> Result<Vec<CardMapping>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("DB lock error: {}", e))?;
         let mut stmt = conn

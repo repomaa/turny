@@ -1,10 +1,17 @@
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ExistingMapping {
+    pub playlist_uri: String,
+    pub playlist_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum WebEvent {
     RfidDetected {
         card_id: String,
+        existing_mapping: Option<ExistingMapping>,
     },
     PlaybackStarted {
         card_id: String,

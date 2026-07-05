@@ -9,7 +9,12 @@ export interface AuthStatus {
 export interface Card {
 	card_id: string;
 	playlist_uri: string;
-	playlist_name: string;
+	playlist_name: string | null;
+}
+
+export interface ExistingMapping {
+	playlist_uri: string;
+	playlist_name: string | null;
 }
 
 export interface Playlist {
@@ -46,7 +51,7 @@ export interface Volume {
 }
 
 export type WsEvent =
-	| { type: 'RfidDetected'; card_id: string }
+	| { type: 'RfidDetected'; card_id: string; existing_mapping: ExistingMapping | null }
 	| { type: 'PlaybackStarted'; card_id: string; playlist_uri: string }
 	| { type: 'PlaybackPaused' }
 	| { type: 'PlaybackResumed' }

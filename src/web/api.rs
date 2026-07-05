@@ -163,6 +163,15 @@ pub async fn get_playlists(
         .get_user_playlists(&token.access_token)
         .await
         .map_err(ApiError::from)?;
+
+    let uri_to_name: std::collections::HashMap<String, String> = playlists
+        .iter()
+        .map(|p| (p.uri.clone(), p.name.clone()))
+        .collect();
+    if let Err(e) = state.db.backfill_playlist_names(&uri_to_name) {
+        log::warn!("Failed to backfill playlist names: {}", e);
+    }
+
     Ok(Json(playlists))
 }
 
