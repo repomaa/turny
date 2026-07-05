@@ -158,4 +158,22 @@ impl Db {
     pub fn set_volume(&self, volume: u8) -> Result<()> {
         self.set_setting("volume", &volume.to_string())
     }
+
+    pub fn save_token(&self, token_json: &str) -> Result<()> {
+        self.set_setting("spotify_token", token_json)
+    }
+
+    pub fn load_token(&self) -> Result<Option<String>> {
+        self.get_setting("spotify_token")
+    }
+
+    pub fn clear_token(&self) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("DB lock error: {}", e))?;
+        conn.execute(
+            "DELETE FROM settings WHERE key = 'spotify_token'",
+            [],
+        )
+        .context("Failed to clear token from database")?;
+        Ok(())
+    }
 }

@@ -3,8 +3,9 @@ use log::{error, info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+use crate::web::Db;
 
 /// OAuth token information
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,7 +64,7 @@ pub struct AuthManager {
     scopes: Vec<String>,
     token_info: Arc<Mutex<Option<TokenInfo>>>,
     http_client: Client,
-    token_file_path: PathBuf,
+    db: Option<Arc<Db>>,
 }
 
 impl AuthManager {
@@ -73,11 +74,8 @@ impl AuthManager {
         client_secret: String,
         redirect_uri: String,
         scopes: Vec<String>,
+        db: Option<Arc<Db>>,
     ) -> Self {
-        let token_file_path = std::env::var("HOME")
-            .map(|h| PathBuf::from(h).join("spotify_token.json"))
-            .unwrap_or_else(|_| PathBuf::from("spotify_token.json"));
-
         let auth_manager = Self {
             client_id,
             client_secret,
@@ -85,11 +83,11 @@ impl AuthManager {
             scopes,
             token_info: Arc::new(Mutex::new(None)),
             http_client: Client::new(),
-            token_file_path,
+            db,
         };
 
-        // Try to load existing token
-        if let Err(e) = auth_manager.load_token_from_file() {
+        // Try to load existing token from DB, with file migration fallback
+        if let Err(e) = auth_manager.load_token() {
             info!("No existing token found or failed to load: {}", e);
         }
 
@@ -267,9 +265,9 @@ impl AuthManager {
             *token_guard = Some(token_info.clone());
         }
 
-        // Persist refreshed token to file
-        if let Err(e) = self.save_token_to_file(&token_info) {
-            error!("Failed to save refreshed token to file: {}", e);
+        // Persist refreshed token to database
+        if let Err(e) = self.save_token(&token_info) {
+            error!("Failed to save refreshed token: {}", e);
         }
 
         info!("Successfully refreshed access token");
@@ -289,9 +287,9 @@ impl AuthManager {
             *token = Some(token_info.clone());
         }
 
-        // Save to file
-        if let Err(e) = self.save_token_to_file(&token_info) {
-            error!("Failed to save token to file: {}", e);
+        // Save to database
+        if let Err(e) = self.save_token(&token_info) {
+            error!("Failed to save token: {}", e);
         }
     }
 
@@ -330,39 +328,66 @@ impl AuthManager {
             *token = None;
         }
 
-        // Remove token file
-        if let Err(e) = std::fs::remove_file(&self.token_file_path) {
-            warn!("Failed to remove token file: {}", e);
+        // Remove token from DB
+        if let Some(db) = &self.db {
+            if let Err(e) = db.clear_token() {
+                warn!("Failed to remove token from database: {}", e);
+            }
         }
     }
 
-    /// Save token to file
-    fn save_token_to_file(&self, token_info: &TokenInfo) -> Result<()> {
+    /// Save token to database (with file migration fallback)
+    fn save_token(&self, token_info: &TokenInfo) -> Result<()> {
         let json = serde_json::to_string_pretty(token_info).context("Failed to serialize token")?;
 
-        std::fs::write(&self.token_file_path, json)
-            .with_context(|| format!("Failed to write token file: {:?}", self.token_file_path))?;
-
-        info!("Token saved to file: {:?}", self.token_file_path);
+        if let Some(db) = &self.db {
+            db.save_token(&json).context("Failed to save token to database")?;
+            info!("Token saved to database");
+        } else {
+            warn!("No database available, token will not be persisted");
+        }
         Ok(())
     }
 
-    /// Load token from file
-    fn load_token_from_file(&self) -> Result<()> {
-        let json = std::fs::read_to_string(&self.token_file_path)
-            .with_context(|| format!("Failed to read token file: {:?}", self.token_file_path))?;
+    /// Load token from database, with migration from legacy file
+    fn load_token(&self) -> Result<()> {
+        if let Some(db) = &self.db {
+            if let Some(json) = db.load_token()? {
+                let token_info: TokenInfo =
+                    serde_json::from_str(&json).context("Failed to deserialize token")?;
+                {
+                    let mut token = self.token_info.lock().unwrap();
+                    *token = Some(token_info);
+                }
+                info!("Token loaded from database");
+                return Ok(());
+            }
 
-        let token_info: TokenInfo =
-            serde_json::from_str(&json).context("Failed to deserialize token")?;
+            // No token in DB — try migrating from legacy file
+            let file_path = std::env::var("HOME")
+                .map(|h| std::path::PathBuf::from(h).join("spotify_token.json"))
+                .unwrap_or_else(|_| std::path::PathBuf::from("spotify_token.json"));
 
-        // Set the token in memory
-        {
-            let mut token = self.token_info.lock().unwrap();
-            *token = Some(token_info);
+            if file_path.exists() {
+                info!("Found legacy token file, migrating to database...");
+                let json = std::fs::read_to_string(&file_path)
+                    .with_context(|| format!("Failed to read legacy token file: {:?}", file_path))?;
+                let token_info: TokenInfo =
+                    serde_json::from_str(&json).context("Failed to deserialize legacy token")?;
+                {
+                    let mut token = self.token_info.lock().unwrap();
+                    *token = Some(token_info);
+                }
+                db.save_token(&json).context("Failed to migrate token to database")?;
+                let _ = std::fs::remove_file(&file_path);
+                info!("Token migrated from file to database");
+                return Ok(());
+            }
+
+            return Err(anyhow::anyhow!("No token in database or legacy file"));
         }
 
-        info!("Token loaded from file: {:?}", self.token_file_path);
-        Ok(())
+        Err(anyhow::anyhow!("No database available"))
     }
 
     /// Simplified OAuth flow - print auth URL and wait for redirect URL input
@@ -426,6 +451,7 @@ mod tests {
             "client_secret".to_string(),
             "http://localhost:8080/callback".to_string(),
             vec!["scope1".to_string(), "scope2".to_string()],
+            None,
         );
 
         let auth_url = auth_manager.get_auth_url();
@@ -440,6 +466,7 @@ mod tests {
             "client_secret".to_string(),
             "http://localhost:8080/callback".to_string(),
             vec!["scope1".to_string()],
+            None,
         );
 
         assert!(!auth_manager.has_valid_token().await);

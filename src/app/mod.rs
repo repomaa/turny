@@ -27,7 +27,7 @@ pub struct TurnyApp {
 
 impl TurnyApp {
     /// Create a new Turny application instance
-    pub async fn new(config: TurnyConfig) -> Result<Self> {
+    pub async fn new(config: TurnyConfig, db: Option<Arc<Db>>) -> Result<Self> {
         info!("Initializing Turny application...");
 
         // Validate configuration
@@ -49,6 +49,7 @@ impl TurnyApp {
             config.spotify.client_secret.clone(),
             config.spotify.redirect_uri.clone(),
             config.advanced.scopes.clone(),
+            db.clone(),
         ));
 
         info!("Turny application initialized successfully");
@@ -535,7 +536,7 @@ mod tests {
     async fn test_app_creation() {
         let config = TurnyConfig::default();
 
-        let result = TurnyApp::new(config).await;
+        let result = TurnyApp::new(config, None).await;
 
         match result {
             Ok(_app) => {
@@ -554,7 +555,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         let app = rt.block_on(async {
-            match TurnyApp::new(config).await {
+            match TurnyApp::new(config, None).await {
                 Ok(app) => Some(app),
                 Err(_) => None,
             }
@@ -571,7 +572,7 @@ mod tests {
     async fn test_authentication_state() {
         let config = TurnyConfig::default();
 
-        if let Ok(app) = TurnyApp::new(config).await {
+        if let Ok(app) = TurnyApp::new(config, None).await {
             assert!(!app.is_authenticated().await);
 
             let oauth_url = app.get_oauth_url();

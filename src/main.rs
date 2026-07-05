@@ -55,7 +55,7 @@ async fn run_hardware_mode() -> Result<()> {
         tokio::sync::mpsc::channel::<web::PlayerCommand>(100);
 
     // Create and initialize the application
-    let mut app = TurnyApp::new(config)
+    let mut app = TurnyApp::new(config, Some(db.clone()))
         .await
         .context("Failed to create Turny application")?;
 
@@ -145,6 +145,7 @@ async fn run_web_mode() -> Result<()> {
             "streaming".to_string(),
             "playlist-read-private".to_string(),
         ],
+        Some(db.clone()),
     ));
 
     let state_manager = StateManager::new();
@@ -183,7 +184,7 @@ async fn handle_auth_command(args: &[String]) -> Result<()> {
     let config = load_config().await?;
 
     // Create a minimal app for auth operations (may fail due to hardware)
-    let app_result = TurnyApp::new(config.clone()).await;
+    let app_result = TurnyApp::new(config.clone(), None).await;
 
     match args.get(0).map(|s| s.as_str()) {
         Some("login") => {
@@ -313,7 +314,7 @@ async fn handle_config_command(args: &[String]) -> Result<()> {
 async fn handle_status_command(_args: &[String]) -> Result<()> {
     let config = load_config().await?;
 
-    match TurnyApp::new(config).await {
+    match TurnyApp::new(config, None).await {
         Ok(app) => {
             let status = app.get_status().await?;
             println!("{}", status);
@@ -329,11 +330,11 @@ async fn handle_status_command(_args: &[String]) -> Result<()> {
                 }
             );
             println!(
-                "Token file: {}",
-                if std::path::Path::new("spotify_token.json").exists() {
-                    "Found"
+                "Token in database: {}",
+                if std::path::Path::new("turny.db").exists() {
+                    "Database found"
                 } else {
-                    "Not found"
+                    "Database not found"
                 }
             );
         }
@@ -346,7 +347,7 @@ async fn handle_status_command(_args: &[String]) -> Result<()> {
 async fn handle_spotify_command(args: &[String]) -> Result<()> {
     let config = load_config().await?;
 
-    match TurnyApp::new(config).await {
+    match TurnyApp::new(config, None).await {
         Ok(mut app) => {
             if !app.is_authenticated().await {
                 println!("Not authenticated. Run 'turny auth login' first.");
