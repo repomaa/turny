@@ -150,11 +150,11 @@ impl Mfrc522RfidReader {
 
 impl RfidReader for Mfrc522RfidReader {
     fn read_card_id(&mut self) -> Option<String> {
-        // Check cooldown period
         if !self.can_read() {
             return None;
         }
-        
+
+        debug!("RFID read cooldown elapsed, polling reader...");
         match self.read_card_internal() {
             Ok(card_id) => {
                 self.last_read_time = Some(Instant::now());

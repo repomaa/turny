@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use rppal::gpio::{Gpio, InputPin, Level, OutputPin};
+use log::debug;
 use std::time::{Duration, Instant};
 
 /// Button events that can be detected
@@ -81,7 +82,11 @@ impl GpioButtonReader {
 
 impl ButtonReader for GpioButtonReader {
     fn check_event(&mut self) -> Option<ButtonEvent> {
-        self.poll()
+        let result = self.poll();
+        if result.is_some() {
+            debug!("Button event detected: {:?}", result);
+        }
+        result
     }
 }
 
