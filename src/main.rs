@@ -47,30 +47,38 @@ async fn run_hardware_mode() -> Result<()> {
         .await
         .context("Failed to create Turny application")?;
 
-    // Check authentication
+    // Check authentication - try refreshing existing token first
     if !app.is_authenticated().await {
-        println!("No valid authentication found!");
-        println!("Please visit this URL to authenticate:");
-        println!("{}", app.get_oauth_url());
-        println!();
-        print!("After authentication, paste the redirect URL here: ");
-        io::stdout().flush().unwrap();
-
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .context("Failed to read redirect URL")?;
-
-        let redirect_url = input.trim();
-
-        // Authenticate with the redirect URL
-        match app.authenticate_with_redirect_url(redirect_url).await {
+        match app.refresh_token().await {
             Ok(_) => {
-                info!("Authentication successful!");
+                info!("Token refreshed successfully");
             }
             Err(e) => {
-                error!("Authentication failed: {}", e);
-                return Err(e);
+                warn!("No valid token and refresh failed: {}", e);
+                println!("No valid authentication found!");
+                println!("Please visit this URL to authenticate:");
+                println!("{}", app.get_oauth_url());
+                println!();
+                print!("After authentication, paste the redirect URL here: ");
+                io::stdout().flush().unwrap();
+
+                let mut input = String::new();
+                io::stdin()
+                    .read_line(&mut input)
+                    .context("Failed to read redirect URL")?;
+
+                let redirect_url = input.trim();
+
+                // Authenticate with the redirect URL
+                match app.authenticate_with_redirect_url(redirect_url).await {
+                    Ok(_) => {
+                        info!("Authentication successful!");
+                    }
+                    Err(e) => {
+                        error!("Authentication failed: {}", e);
+                        return Err(e);
+                    }
+                }
             }
         }
     }

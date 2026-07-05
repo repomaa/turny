@@ -75,18 +75,10 @@ impl TurnyApp {
     /// Initialize Spotify services
     pub async fn initialize_spotify(&mut self) -> Result<()> {
         info!("Initializing Spotify services...");
-        
-        // Check if we have valid authentication
-        if !self.auth_manager.has_valid_token().await {
-            warn!("No valid Spotify authentication found!");
-            warn!("Please authenticate using OAuth. Visit this URL:");
-            warn!("{}", self.auth_manager.get_auth_url());
-            return Err(anyhow::anyhow!("Authentication required before initializing Spotify"));
-        }
-        
-        // Get the current token
-        let token_info = self.auth_manager.get_token_info().await
-            .context("Failed to get token info")?;
+
+        // Ensure we have a valid token, refreshing if necessary
+        let token_info = self.auth_manager.ensure_valid_token().await
+            .context("No valid Spotify authentication. Please authenticate first.")?;
         
         // Initialize Spotify Connect with the token
         self.spotify_connect.initialize_with_token(
@@ -122,6 +114,11 @@ impl TurnyApp {
     /// Check if authenticated
     pub async fn is_authenticated(&self) -> bool {
         self.auth_manager.has_valid_token().await
+    }
+
+    /// Refresh token using existing refresh token
+    pub async fn refresh_token(&self) -> Result<TokenInfo> {
+        self.auth_manager.ensure_valid_token().await
     }
     
     /// Clear authentication (logout)
