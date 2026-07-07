@@ -3,7 +3,7 @@ use log::{debug, error, info, warn};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
 use crate::audio;
 use crate::auth::{AuthManager, TokenInfo};
@@ -159,12 +159,17 @@ impl TurnyApp {
         self.play_startup_sound().await?;
 
         loop {
-            // If authenticated but Spotify Connect not yet initialized, try to init
+            // If authenticated but Spotify Connect not yet initialized, try to init.
+            // A timeout is critical: Spirc::new() / Session::connect() can block
+            // for hours if Spotify APs are unreachable, which would freeze the
+            // entire main loop (no RFID polling, no button checks, no auto-pause).
             if self.auth_manager.has_valid_token().await
                 && !self.spotify_connect.is_initialized()
             {
-                if let Err(e) = self.initialize_spotify().await {
-                    debug!("Deferred Spotify init failed: {}", e);
+                match timeout(Duration::from_secs(30), self.initialize_spotify()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => warn!("Deferred Spotify init failed: {}", e),
+                    Err(_) => warn!("Deferred Spotify init timed out after 30s, will retry next loop"),
                 }
             }
 
@@ -246,31 +251,30 @@ impl TurnyApp {
                     warn!("Playlist {} is invalid, but attempting playback anyway", playlist_uri);
                 }
 
-                // Update state
-                self.state_manager.set_current_card(card_id.clone(), playlist_uri.clone())?;
+                // Start playback — only update state/LED on success so that
+                // a failed attempt (e.g. Spirc not yet ready) will be retried
+                // on the next poll instead of being silently swallowed.
+                match self.start_playback(&playlist_uri).await {
+                    Ok(()) => {
+                        self.state_manager.set_current_card(card_id.clone(), playlist_uri.clone())?;
+                        self.state_manager.set_playing(true)?;
+                        self.hardware.led_on()?;
 
-                // Start playback (graceful failure if not authenticated/initialized)
-                if let Err(e) = self.start_playback(&playlist_uri).await {
-                    warn!("Failed to start playback for card {}: {}", card_id, e);
-                }
-
-                // Update playing state
-                self.state_manager.set_playing(true)?;
-
-                // Turn on LED
-                self.hardware.led_on()?;
-
-                // Broadcast playback started
-                if let Some(tx) = &self.event_tx {
-                    let _ = tx.send(WebEvent::PlaybackStarted {
-                        card_id: card_id.clone(),
-                        playlist_uri: playlist_uri.clone(),
-                    });
-                    let _ = tx.send(WebEvent::StateChanged {
-                        is_playing: true,
-                        current_card: Some(card_id),
-                        context_uri: Some(playlist_uri),
-                    });
+                        if let Some(tx) = &self.event_tx {
+                            let _ = tx.send(WebEvent::PlaybackStarted {
+                                card_id: card_id.clone(),
+                                playlist_uri: playlist_uri.clone(),
+                            });
+                            let _ = tx.send(WebEvent::StateChanged {
+                                is_playing: true,
+                                current_card: Some(card_id),
+                                context_uri: Some(playlist_uri),
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to start playback for card {}: {}", card_id, e);
+                    }
                 }
             } else {
                 warn!("No playlist configured for card: {}", card_id);
