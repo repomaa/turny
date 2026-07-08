@@ -159,13 +159,26 @@ impl TurnyApp {
         self.play_startup_sound().await?;
 
         loop {
-            // If authenticated but Spotify Connect not yet initialized, try to init.
-            // A timeout is critical: Spirc::new() / Session::connect() can block
-            // for hours if Spotify APs are unreachable, which would freeze the
-            // entire main loop (no RFID polling, no button checks, no auto-pause).
+            // If authenticated but Spotify Connect not yet initialized, or if the
+            // session has been invalidated (e.g. AP connection dropped), try to
+            // (re)initialize. A timeout is critical: Spirc::new() /
+            // Session::connect() can block for hours if Spotify APs are
+            // unreachable, which would freeze the entire main loop.
             if self.auth_manager.has_valid_token().await
                 && !self.spotify_connect.is_initialized()
             {
+                if self.spotify_connect.needs_reinit() {
+                    info!("Spotify session lost, reinitializing...");
+                    if let Err(e) = self.spotify_connect.stop().await {
+                        warn!("Error stopping dead Spotify Connect: {}", e);
+                    }
+                    self.state_manager.with_state_mut(|s| {
+                        s.current_id = None;
+                        s.is_playing = false;
+                    })?;
+                    self.hardware.led_off()?;
+                }
+
                 match timeout(Duration::from_secs(30), self.initialize_spotify()).await {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => warn!("Deferred Spotify init failed: {}", e),

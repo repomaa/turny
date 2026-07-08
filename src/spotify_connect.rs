@@ -154,7 +154,11 @@ impl SpotifyConnect {
     }
 
     pub fn is_initialized(&self) -> bool {
-        self.session.is_some()
+        self.session.as_ref().map(|s| !s.is_invalid()).unwrap_or(false)
+    }
+
+    pub fn needs_reinit(&self) -> bool {
+        self.session.as_ref().map(|s| s.is_invalid()).unwrap_or(false)
     }
 
     pub fn set_initial_volume(&mut self, volume: u16) {
