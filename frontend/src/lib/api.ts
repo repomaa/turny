@@ -4,18 +4,17 @@ import type {
 	Card,
 	Playlist,
 	NowPlaying,
-	PlayerState,
-	LastCard,
 	Volume
 } from './types';
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
+async function request<T>(url: string, init?: RequestInit): Promise<T | undefined> {
 	const res = await fetch(url, init);
 	if (!res.ok) {
-		throw new Error(`${url}: ${res.status} ${res.statusText}`);
+		const body = await res.text().catch(() => '');
+		throw new Error(`${url}: ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`);
 	}
 	const text = await res.text();
-	return text ? (JSON.parse(text) as T) : (undefined as T);
+	return text ? (JSON.parse(text) as T) : undefined;
 }
 
 export function getAuthUrl(): Promise<AuthUrlResponse> {
@@ -27,7 +26,7 @@ export function getAuthStatus(): Promise<AuthStatus> {
 }
 
 export function logout(): Promise<void> {
-	return request<void>('/api/auth/logout', { method: 'POST' });
+	return request('/api/auth/logout', { method: 'POST' }).then(() => undefined);
 }
 
 export function getCards(): Promise<Card[]> {
@@ -35,17 +34,17 @@ export function getCards(): Promise<Card[]> {
 }
 
 export function saveCard(card_id: string, playlist_uri: string, playlist_name?: string): Promise<void> {
-	return request<void>('/api/cards', {
+	return request('/api/cards', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ card_id, playlist_uri, playlist_name })
-	});
+	}).then(() => undefined);
 }
 
 export function deleteCard(card_id: string): Promise<void> {
-	return request<void>(`/api/cards/${encodeURIComponent(card_id)}`, {
+	return request(`/api/cards/${encodeURIComponent(card_id)}`, {
 		method: 'DELETE'
-	});
+	}).then(() => undefined);
 }
 
 export function getPlaylists(): Promise<Playlist[]> {
@@ -56,28 +55,20 @@ export function getNowPlaying(): Promise<NowPlaying | null> {
 	return request<NowPlaying | null>('/api/now-playing');
 }
 
-export function getState(): Promise<PlayerState> {
-	return request<PlayerState>('/api/state');
-}
-
-export function getLastCard(): Promise<LastCard | null> {
-	return request<LastCard | null>('/api/last-card');
-}
-
 export function playerPlay(): Promise<void> {
-	return request<void>('/api/player/play', { method: 'POST' });
+	return request('/api/player/play', { method: 'POST' }).then(() => undefined);
 }
 
 export function playerPause(): Promise<void> {
-	return request<void>('/api/player/pause', { method: 'POST' });
+	return request('/api/player/pause', { method: 'POST' }).then(() => undefined);
 }
 
 export function playerNext(): Promise<void> {
-	return request<void>('/api/player/next', { method: 'POST' });
+	return request('/api/player/next', { method: 'POST' }).then(() => undefined);
 }
 
 export function playerPrevious(): Promise<void> {
-	return request<void>('/api/player/previous', { method: 'POST' });
+	return request('/api/player/previous', { method: 'POST' }).then(() => undefined);
 }
 
 export function getVolume(): Promise<Volume> {
@@ -85,9 +76,9 @@ export function getVolume(): Promise<Volume> {
 }
 
 export function setVolume(volume: number): Promise<void> {
-	return request<void>('/api/volume', {
+	return request('/api/volume', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ volume })
-	});
+	}).then(() => undefined);
 }

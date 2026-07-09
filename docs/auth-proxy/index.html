@@ -84,7 +84,7 @@
 
       var callbackUrl = decoded.origin +
         '/api/auth/callback?code=' + encodeURIComponent(code) +
-        '&state=' + encodeURIComponent(decoded.csrf || '');
+        '&state=' + encodeURIComponent(stateParam);
 
       window.location.replace(callbackUrl);
     })();

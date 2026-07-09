@@ -22,13 +22,14 @@ use axum::{
 use rust_embed::Embed;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
-use tower_http::cors::CorsLayer;
 
 #[derive(Embed)]
 #[folder = "frontend/build/"]
 struct FrontendAssets;
 
 const INDEX_HTML: &str = "index.html";
+const MAX_PENDING_AUTH_STATES: usize = 32;
+const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -38,6 +39,9 @@ pub struct AppState {
     pub event_tx: broadcast::Sender<WebEvent>,
     pub player_cmd_tx: mpsc::Sender<PlayerCommand>,
     pub state_manager: StateManager,
+    pub pending_auth_states: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
+    pub web_origin: Option<String>,
+    pub default_volume: u8,
 }
 
 pub fn create_router(state: AppState) -> Router {
@@ -64,7 +68,6 @@ pub fn create_router(state: AppState) -> Router {
         .route("/ws", axum::routing::any(ws_handler))
         .with_state(state)
         .fallback(static_handler)
-        .layer(CorsLayer::very_permissive())
 }
 
 async fn static_handler(uri: Uri) -> Response {
@@ -77,12 +80,19 @@ async fn static_handler(uri: Uri) -> Response {
     match FrontendAssets::get(path) {
         Some(content) => {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
-            (
+            let mut response = (
                 StatusCode::OK,
                 [(header::CONTENT_TYPE, mime.as_ref())],
                 content.data,
             )
-                .into_response()
+                .into_response();
+            if path.starts_with("_app/immutable/") {
+                response.headers_mut().insert(
+                    header::CACHE_CONTROL,
+                    axum::http::HeaderValue::from_static(IMMUTABLE_CACHE_CONTROL),
+                );
+            }
+            response
         }
         None => {
             if path.contains('.') {
@@ -100,7 +110,10 @@ async fn static_handler(uri: Uri) -> Response {
 async fn index_html() -> Response {
     match FrontendAssets::get(INDEX_HTML) {
         Some(content) => Html(content.data).into_response(),
-        None => (StatusCode::NOT_FOUND, "404 Not Found").into_response(),
+        None => {
+            log::warn!("Frontend assets not found - frontend/build/ may be missing");
+            (StatusCode::NOT_FOUND, "404 Not Found").into_response()
+        }
     }
 }
 
@@ -112,24 +125,39 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Resp
                 Ok(event) => {
                     let json = match serde_json::to_string(&event) {
                         Ok(j) => j,
-                        Err(_) => continue,
+                        Err(e) => {
+                            log::warn!("Failed to serialize WebSocket event: {}", e);
+                            continue;
+                        }
                     };
                     if socket.send(Message::Text(json)).await.is_err() {
                         break;
                     }
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let _ = socket
+                        .send(Message::Text(
+                            serde_json::json!({"type": "LagDetected"}).to_string(),
+                        ))
+                        .await;
+                    continue;
+                }
             }
         }
     })
 }
 
-pub async fn start_web_server(state: AppState, addr: &str) -> anyhow::Result<()> {
+pub async fn start_web_server(
+    state: AppState,
+    addr: &str,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
     let router = create_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log::info!("Web server listening on {}", addr);
-    println!("Web UI: http://{}", addr);
-    axum::serve(listener, router).await?;
+    axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal)
+        .await?;
     Ok(())
 }

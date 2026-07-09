@@ -27,7 +27,6 @@ pub struct GpioButtonReader {
     pin: InputPin,
     last_level: Level,
     press_start: Option<Instant>,
-    action_handled: bool,
 }
 
 impl GpioButtonReader {
@@ -45,7 +44,6 @@ impl GpioButtonReader {
             pin,
             last_level,
             press_start: None,
-            action_handled: false,
         })
     }
     
@@ -57,7 +55,6 @@ impl GpioButtonReader {
         if self.last_level == Level::High && current_level == Level::Low {
             // Button just pressed
             self.press_start = Some(Instant::now());
-            self.action_handled = false;
             self.last_level = current_level;
             return Some(ButtonEvent::Pressed);
         }
@@ -68,7 +65,6 @@ impl GpioButtonReader {
             if let Some(start) = self.press_start.take() {
                 let duration = start.elapsed();
                 self.last_level = current_level;
-                self.action_handled = false;
                 return Some(ButtonEvent::Released(duration));
             }
         }
@@ -76,8 +72,6 @@ impl GpioButtonReader {
         self.last_level = current_level;
         None
     }
-    
-
 }
 
 impl ButtonReader for GpioButtonReader {
@@ -124,8 +118,6 @@ impl GpioLedController {
         self.is_on = on;
         Ok(())
     }
-    
-
 }
 
 impl LedController for GpioLedController {
@@ -140,54 +132,30 @@ impl LedController for GpioLedController {
     fn is_on(&self) -> bool {
         self.is_on
     }
-    
-
 }
 
 /// Blink an LED for a specified duration
 pub async fn blink_led(led: &mut dyn LedController, duration: Duration) -> Result<()> {
     let original_state = led.is_on();
-    
-    // Turn on
+    let half = duration / 2;
+
     led.turn_on()?;
-    
-    // Wait for specified duration
-    tokio::time::sleep(duration).await;
-    
-    // Restore original state
+    tokio::time::sleep(half).await;
+    led.turn_off()?;
+    tokio::time::sleep(half).await;
+
     if original_state {
         led.turn_on()?;
     } else {
         led.turn_off()?;
     }
-    
+
     Ok(())
 }
-
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
-
-
-
-    #[test]
-    fn test_button_event_detection() {
-        // Note: This test would need to be adapted for actual GPIO testing
-        // For now, we'll test the logic structure
-        let event = ButtonEvent::Pressed;
-        assert!(matches!(event, ButtonEvent::Pressed));
-        
-        let event = ButtonEvent::Released(Duration::from_secs(1));
-        match event {
-            ButtonEvent::Released(duration) => {
-                assert_eq!(duration, Duration::from_secs(1));
-            }
-            _ => panic!("Expected Released event"),
-        }
-    }
 
     #[test]
     fn test_led_controller_trait() {
@@ -210,8 +178,6 @@ mod tests {
             fn is_on(&self) -> bool {
                 self.is_on
             }
-            
-
         }
         
         let mut led = MockLed { is_on: false };
@@ -223,6 +189,4 @@ mod tests {
         led.turn_off().unwrap();
         assert!(!led.is_on());
     }
-
-
 }

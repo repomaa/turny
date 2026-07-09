@@ -36,5 +36,5 @@ fn main() {
         }
     }
 
-    println!("cargo:rerun-if-changed=frontend/build");
+    println!("cargo:rerun-if-changed=frontend/build/index.html");
 }

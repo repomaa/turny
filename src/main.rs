@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
 use log::{error, info, warn};
 use std::env;
-use std::io::{self, Write};
 use std::sync::Arc;
 use tokio::signal;
 
 mod app;
 mod audio;
 mod auth;
+mod cli;
 mod config;
 mod hardware;
 mod spotify_connect;
@@ -18,10 +18,16 @@ use app::TurnyApp;
 use auth::AuthManager;
 use config::TurnyConfig;
 use state::StateManager;
+use tokio::sync::{broadcast, mpsc};
+
+const EVENT_CHANNEL_CAPACITY: usize = 100;
+const CMD_CHANNEL_CAPACITY: usize = 100;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    rustls::crypto::ring::default_provider().install_default().expect("Failed to install rustls CryptoProvider");
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls CryptoProvider");
 
     // Initialize logging
     env_logger::init();
@@ -30,8 +36,10 @@ async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
     if args.len() > 1 {
-        // CLI mode
-        return run_cli_mode(&args[1..]).await;
+        if args[1] == "web" {
+            return run_web_mode().await;
+        }
+        return cli::run_cli_mode(&args[1..]).await;
     }
 
     // Default hardware mode
@@ -43,26 +51,31 @@ async fn run_hardware_mode() -> Result<()> {
     info!("Starting Turny Music Player...");
 
     // Load configuration
-    let config = load_config().await?;
+    let config = cli::load_config().await?;
 
     // Create DB and migrate
-    let db = std::sync::Arc::new(web::Db::open("turny.db")?);
-    db.migrate_from_config(&config.playlists)?;
+    let db = Arc::new(web::Db::open("turny.db")?);
+    db.migrate_from_config(&config.playlists).await?;
 
     // Create channels
-    let (event_tx, _) = tokio::sync::broadcast::channel::<web::WebEvent>(100);
-    let (player_cmd_tx, player_cmd_rx) =
-        tokio::sync::mpsc::channel::<web::PlayerCommand>(100);
+    let (event_tx, _) = broadcast::channel::<web::WebEvent>(EVENT_CHANNEL_CAPACITY);
+    let (player_cmd_tx, player_cmd_rx) = mpsc::channel::<web::PlayerCommand>(CMD_CHANNEL_CAPACITY);
+
+    // Extract web config before config is moved into TurnyApp
+    let web_addr = format!("{}:{}", config.web.host, config.web.port);
 
     // Create and initialize the application
-    let mut app = TurnyApp::new(config, Some(db.clone()))
-        .await
-        .context("Failed to create Turny application")?;
-
-    app.set_web_integration(db.clone(), event_tx.clone(), player_cmd_rx);
+    let mut app = TurnyApp::new(
+        config.clone(),
+        Some(db.clone()),
+        Some(event_tx.clone()),
+        Some(player_cmd_rx),
+    )
+    .await
+    .context("Failed to create Turny application")?;
 
     // Check authentication - try refreshing existing token first
-    if !app.is_authenticated().await {
+    if !app.is_authenticated()? {
         if let Err(e) = app.refresh_token().await {
             warn!(
                 "No valid token: {}. Authenticate via web UI at http://localhost:8080",
@@ -72,7 +85,7 @@ async fn run_hardware_mode() -> Result<()> {
     }
 
     // Initialize Spotify services
-    if app.is_authenticated().await {
+    if app.is_authenticated()? {
         if let Err(e) = app.initialize_spotify().await {
             error!("Failed to initialize Spotify services: {}", e);
         }
@@ -82,35 +95,30 @@ async fn run_hardware_mode() -> Result<()> {
     let auth_manager = app.get_auth_manager();
     let state_manager = app.get_state_manager();
 
-    let web_state = web::AppState {
+    let web_state = build_app_state(
         db,
         auth_manager,
-        spotify_api: web::SpotifyApi::new(),
+        &config,
         event_tx,
         player_cmd_tx,
         state_manager,
-    };
+    );
 
-    let web_addr = "0.0.0.0:8080".to_string();
+    let shutdown_for_web = setup_shutdown_signal();
     let web_handle = tokio::spawn(async move {
-        if let Err(e) = web::start_web_server(web_state, &web_addr).await {
+        if let Err(e) = web::start_web_server(web_state, &web_addr, shutdown_for_web).await {
             error!("Web server error: {}", e);
         }
     });
 
-    // Set up graceful shutdown
-    let shutdown_signal = setup_shutdown_signal();
-
-    // Run the application
+    // Run the application — the web server handles the shutdown signal
+    // and will gracefully close WebSocket connections.
     tokio::select! {
         result = app.run() => {
             match result {
                 Ok(_) => info!("Application completed successfully"),
                 Err(e) => error!("Application error: {}", e),
             }
-        }
-        _ = shutdown_signal => {
-            info!("Shutdown signal received");
         }
         _ = web_handle => {
             info!("Web server stopped");
@@ -129,386 +137,63 @@ async fn run_hardware_mode() -> Result<()> {
 async fn run_web_mode() -> Result<()> {
     info!("Starting Turny web server (no hardware mode)...");
 
-    let config = load_config().await?;
+    let config = cli::load_config().await?;
 
     let db = Arc::new(web::Db::open("turny.db")?);
-    db.migrate_from_config(&config.playlists)?;
+    db.migrate_from_config(&config.playlists).await?;
 
     let auth_manager = Arc::new(AuthManager::new(
         config.spotify.client_id.clone(),
         config.spotify.client_secret.clone(),
         config.spotify.redirect_uri.clone(),
-        vec![
-            "user-read-playback-state".to_string(),
-            "user-modify-playback-state".to_string(),
-            "user-read-currently-playing".to_string(),
-            "streaming".to_string(),
-            "playlist-read-private".to_string(),
-        ],
+        config.advanced.scopes.clone(),
         Some(db.clone()),
-    ));
+    ).await);
 
     let state_manager = StateManager::new();
-    let (event_tx, _) = tokio::sync::broadcast::channel::<web::WebEvent>(100);
-    let (player_cmd_tx, _player_cmd_rx) =
-        tokio::sync::mpsc::channel::<web::PlayerCommand>(100);
+    let (event_tx, _) = broadcast::channel::<web::WebEvent>(EVENT_CHANNEL_CAPACITY);
+    let (player_cmd_tx, _player_cmd_rx) = mpsc::channel::<web::PlayerCommand>(CMD_CHANNEL_CAPACITY);
 
-    let web_state = web::AppState {
+    let web_state = build_app_state(
         db,
         auth_manager,
-        spotify_api: web::SpotifyApi::new(),
+        &config,
         event_tx,
         player_cmd_tx,
         state_manager,
-    };
+    );
 
+    let web_addr = format!("{}:{}", config.web.host, config.web.port);
     let shutdown_signal = setup_shutdown_signal();
 
-    tokio::select! {
-        result = web::start_web_server(web_state, "0.0.0.0:8080") => {
-            if let Err(e) = result {
-                error!("Web server error: {}", e);
-            }
-        }
-        _ = shutdown_signal => {
-            info!("Shutdown signal received");
-        }
+    if let Err(e) = web::start_web_server(web_state, &web_addr, shutdown_signal).await {
+        error!("Web server error: {}", e);
     }
 
     info!("Web server stopped");
     Ok(())
 }
 
-/// Handle authentication commands
-async fn handle_auth_command(args: &[String]) -> Result<()> {
-    let config = load_config().await?;
-
-    // Create a minimal app for auth operations (may fail due to hardware)
-    let app_result = TurnyApp::new(config.clone(), None).await;
-
-    match args.get(0).map(|s| s.as_str()) {
-        Some("login") => {
-            // Use auth manager directly if app creation fails
-            if let Ok(app) = app_result {
-                if app.is_authenticated().await {
-                    println!("Already authenticated!");
-                    return Ok(());
-                }
-
-                println!("Please visit this URL to authenticate:");
-                println!("{}", app.get_oauth_url());
-                println!();
-                print!("After authentication, paste the redirect URL here: ");
-                io::stdout().flush().unwrap();
-
-                let mut input = String::new();
-                io::stdin()
-                    .read_line(&mut input)
-                    .context("Failed to read redirect URL")?;
-
-                let redirect_url = input.trim();
-
-                match app.authenticate_with_redirect_url(redirect_url).await {
-                    Ok(_) => println!("Authentication successful!"),
-                    Err(e) => println!("Authentication failed: {}", e),
-                }
-            } else {
-                println!("Cannot initialize hardware for authentication.");
-                println!("Please run on a Raspberry Pi or use the main application.");
-            }
-        }
-        Some("logout") => {
-            if let Ok(app) = app_result {
-                println!("Logging out...");
-                match app.clear_authentication().await {
-                    Ok(_) => println!("Successfully logged out!"),
-                    Err(e) => println!("Error during logout: {}", e),
-                }
-            } else {
-                println!("Cannot access authentication without hardware.");
-            }
-        }
-        Some("status") => {
-            if let Ok(app) = app_result {
-                let authenticated = app.is_authenticated().await;
-                println!(
-                    "Authentication status: {}",
-                    if authenticated {
-                        "Authenticated"
-                    } else {
-                        "Not authenticated"
-                    }
-                );
-                if !authenticated {
-                    println!("OAuth URL: {}", app.get_oauth_url());
-                }
-            } else {
-                println!("Cannot check authentication status without hardware.");
-            }
-        }
-        _ => {
-            println!("Auth commands:");
-            println!("  login   - Authenticate with Spotify");
-            println!("  logout  - Clear authentication");
-            println!("  status  - Show authentication status");
-        }
+/// Build AppState for the web server, extracting config-derived fields
+fn build_app_state(
+    db: Arc<web::Db>,
+    auth_manager: Arc<AuthManager>,
+    config: &TurnyConfig,
+    event_tx: broadcast::Sender<web::WebEvent>,
+    player_cmd_tx: mpsc::Sender<web::PlayerCommand>,
+    state_manager: StateManager,
+) -> web::AppState {
+    web::AppState {
+        db,
+        auth_manager,
+        spotify_api: web::SpotifyApi::new(),
+        event_tx,
+        player_cmd_tx,
+        state_manager,
+        pending_auth_states: Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new())),
+        web_origin: config.web.external_url.clone(),
+        default_volume: config.settings.default_volume,
     }
-
-    Ok(())
-}
-
-/// Handle configuration commands
-async fn handle_config_command(args: &[String]) -> Result<()> {
-    let mut config = load_config().await?;
-
-    match args.get(0).map(|s| s.as_str()) {
-        Some("show") => {
-            println!("Current configuration:");
-            println!("Client ID: {}", config.spotify.client_id);
-            println!("Redirect URI: {}", config.spotify.redirect_uri);
-            println!("Card mappings: {} entries", config.playlists.len());
-            for (card_id, playlist_uri) in &config.playlists {
-                println!("  {}: {}", card_id, playlist_uri);
-            }
-        }
-        Some("add-card") => {
-            if args.len() < 3 {
-                println!("Usage: turny config add-card <card_id> <playlist_uri>");
-                return Ok(());
-            }
-
-            let card_id = args[1].clone();
-            let playlist_uri = args[2].clone();
-
-            config.add_card_mapping(card_id.clone(), playlist_uri.clone());
-            config.save_to_file("config.toml")?;
-
-            println!("Added card mapping: {} -> {}", card_id, playlist_uri);
-        }
-        Some("remove-card") => {
-            if args.len() < 2 {
-                println!("Usage: turny config remove-card <card_id>");
-                return Ok(());
-            }
-
-            let card_id = &args[1];
-            if let Some(playlist_uri) = config.remove_card_mapping(card_id) {
-                config.save_to_file("config.toml")?;
-                println!("Removed card mapping: {} -> {}", card_id, playlist_uri);
-            } else {
-                println!("Card not found: {}", card_id);
-            }
-        }
-        _ => {
-            println!("Config commands:");
-            println!("  show                      - Show current configuration");
-            println!("  add-card <id> <playlist>  - Add card mapping");
-            println!("  remove-card <id>          - Remove card mapping");
-        }
-    }
-
-    Ok(())
-}
-
-/// Handle status commands
-async fn handle_status_command(_args: &[String]) -> Result<()> {
-    let config = load_config().await?;
-
-    match TurnyApp::new(config, None).await {
-        Ok(app) => {
-            let status = app.get_status().await?;
-            println!("{}", status);
-        }
-        Err(e) => {
-            println!("Cannot get full status without hardware: {}", e);
-            println!(
-                "Configuration file: {}",
-                if std::path::Path::new("config.toml").exists() {
-                    "Found"
-                } else {
-                    "Not found"
-                }
-            );
-            println!(
-                "Token in database: {}",
-                if std::path::Path::new("turny.db").exists() {
-                    "Database found"
-                } else {
-                    "Database not found"
-                }
-            );
-        }
-    }
-
-    Ok(())
-}
-
-/// Handle Spotify commands
-async fn handle_spotify_command(args: &[String]) -> Result<()> {
-    let config = load_config().await?;
-
-    match TurnyApp::new(config, None).await {
-        Ok(mut app) => {
-            if !app.is_authenticated().await {
-                println!("Not authenticated. Run 'turny auth login' first.");
-                return Ok(());
-            }
-
-            if let Err(e) = app.initialize_spotify().await {
-                println!("Failed to initialize Spotify: {}", e);
-                return Ok(());
-            }
-
-            match args.get(0).map(|s| s.as_str()) {
-                Some("status") => {
-                    println!(
-                        "Spotify Connect status: {}",
-                        if app.is_spotify_connect_initialized() {
-                            "Connected"
-                        } else {
-                            "Disconnected"
-                        }
-                    );
-                }
-                _ => {
-                    println!("Spotify commands:");
-                    println!("  status  - Show Spotify Connect status");
-                    println!();
-                    println!("Note: Advanced Spotify controls are handled by the main application");
-                    println!("when running in hardware mode with RFID cards and buttons.");
-                }
-            }
-        }
-        Err(e) => {
-            println!("Cannot access Spotify without hardware: {}", e);
-        }
-    }
-
-    Ok(())
-}
-
-/// Handle card management commands
-async fn handle_cards_command(args: &[String]) -> Result<()> {
-    let mut config = load_config().await?;
-
-    match args.get(0).map(|s| s.as_str()) {
-        Some("list") => {
-            println!("Card mappings:");
-            if config.playlists.is_empty() {
-                println!("  No cards configured");
-            } else {
-                for (card_id, playlist_uri) in &config.playlists {
-                    println!("  {}: {}", card_id, playlist_uri);
-                }
-            }
-        }
-        Some("add") => {
-            if args.len() < 3 {
-                println!("Usage: turny cards add <card_id> <playlist_uri>");
-                return Ok(());
-            }
-
-            let card_id = args[1].clone();
-            let playlist_uri = args[2].clone();
-
-            config.add_card_mapping(card_id.clone(), playlist_uri.clone());
-            config.save_to_file("config.toml")?;
-
-            println!("Added card: {} -> {}", card_id, playlist_uri);
-        }
-        Some("remove") => {
-            if args.len() < 2 {
-                println!("Usage: turny cards remove <card_id>");
-                return Ok(());
-            }
-
-            let card_id = &args[1];
-            if let Some(playlist_uri) = config.remove_card_mapping(card_id) {
-                config.save_to_file("config.toml")?;
-                println!("Removed card: {} -> {}", card_id, playlist_uri);
-            } else {
-                println!("Card not found: {}", card_id);
-            }
-        }
-        _ => {
-            println!("Card commands:");
-            println!("  list           - List all card mappings");
-            println!("  add <id> <uri> - Add card mapping");
-            println!("  remove <id>    - Remove card mapping");
-        }
-    }
-
-    Ok(())
-}
-
-/// Run CLI mode with various commands
-async fn run_cli_mode(args: &[String]) -> Result<()> {
-    if args.is_empty() {
-        print_help();
-        return Ok(());
-    }
-
-    match args[0].as_str() {
-        "auth" => handle_auth_command(&args[1..]).await,
-        "config" => handle_config_command(&args[1..]).await,
-        "status" => handle_status_command(&args[1..]).await,
-        "spotify" => handle_spotify_command(&args[1..]).await,
-        "cards" => handle_cards_command(&args[1..]).await,
-        "web" => run_web_mode().await,
-        "help" | "--help" | "-h" => {
-            print_help();
-            Ok(())
-        }
-        _ => {
-            println!("Unknown command: {}", args[0]);
-            print_help();
-            Ok(())
-        }
-    }
-}
-
-/// Print help information
-fn print_help() {
-    println!("Turny Music Player - CLI Mode");
-    println!("Usage: turny [COMMAND] [OPTIONS]");
-    println!();
-    println!("Commands:");
-    println!("  auth      Authentication management");
-    println!("  config    Configuration management");
-    println!("  status    Show application status");
-    println!("  spotify   Spotify operations");
-    println!("  cards     RFID card management");
-    println!("  web       Start web server only (no hardware required)");
-    println!("  help      Show this help message");
-    println!();
-    println!("Run without arguments to start hardware mode.");
-    println!();
-    println!("Examples:");
-    println!("  turny auth login                 # Authenticate with Spotify");
-    println!("  turny auth logout                # Clear authentication");
-    println!("  turny status                     # Show current status");
-    println!("  turny config show                # Show current configuration");
-    println!("  turny spotify devices            # List available devices");
-    println!("  turny cards add <id> <playlist>  # Add card mapping");
-}
-
-/// Load configuration from file or environment variables
-async fn load_config() -> Result<TurnyConfig> {
-    // Try to load from config file first
-    if let Ok(config) = TurnyConfig::from_file("config.toml") {
-        info!("Loaded configuration from config.toml");
-        config.validate().context("Invalid configuration in config.toml")?;
-        return Ok(config);
-    }
-
-    // Fall back to environment variables or defaults
-    let config = TurnyConfig::from_env_or_default();
-    info!("Using configuration from environment variables");
-
-    // Validate configuration
-    config.validate().context("Invalid configuration")?;
-
-    Ok(config)
 }
 
 /// Set up graceful shutdown signal handling

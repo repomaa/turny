@@ -1,6 +1,6 @@
 [Unit]
 Description=Turny Spotify RFID Controller
-Documentation=https://github.com/your-username/turny
+Documentation=https://github.com/repomaa/turny
 After=network.target sound.target
 Wants=network.target
 
@@ -13,6 +13,7 @@ ExecStart=/home/pi/turny/target/release/turny
 Restart=always
 RestartSec=10
 RestartPreventExitStatus=23
+# Exit code 23 = authentication required (not a crash, don't restart)
 
 # Environment variables
 Environment=RUST_LOG=info

@@ -22,11 +22,15 @@ use log::{info, warn};
 pub struct SpotifyConnect {
     device_name: String,
     access_token: Option<String>,
-    refresh_token: Option<String>,
     session: Option<Session>,
     spirc: Option<Spirc>,
     spirc_task: Option<tokio::task::JoinHandle<()>>,
     initial_volume: u16,
+}
+
+/// Convert a volume percentage (0–100) to the u16 range librespot expects (0–65535).
+pub fn pct_to_librespot_volume(volume_pct: u8) -> u16 {
+    (volume_pct.min(100) as u32 * u16::MAX as u32 / 100) as u16
 }
 
 impl SpotifyConnect {
@@ -34,7 +38,6 @@ impl SpotifyConnect {
         Self {
             device_name,
             access_token: None,
-            refresh_token: None,
             session: None,
             spirc: None,
             spirc_task: None,
@@ -45,10 +48,8 @@ impl SpotifyConnect {
     pub async fn initialize_with_token(
         &mut self,
         access_token: String,
-        refresh_token: Option<String>,
     ) -> Result<()> {
         self.access_token = Some(access_token);
-        self.refresh_token = refresh_token;
         self.initialize().await
     }
 
@@ -117,11 +118,6 @@ impl SpotifyConnect {
         Ok(())
     }
 
-    pub async fn start(&mut self) -> Result<()> {
-        info!("Spotify Connect service started");
-        Ok(())
-    }
-
     pub async fn stop(&mut self) -> Result<()> {
         if let Some(spirc) = self.spirc.take() {
             if let Err(e) = spirc.shutdown() {
@@ -140,38 +136,50 @@ impl SpotifyConnect {
         Ok(())
     }
 
-    pub async fn restart(&mut self) -> Result<()> {
-        info!("Restarting Spotify Connect...");
+    /// Stop the Spotify Connect service and wait for it to fully shut down.
+    /// Does NOT reinitialize — call `initialize_with_token` afterwards.
+    pub async fn stop_and_wait(&mut self) -> Result<()> {
+        info!("Stopping Spotify Connect...");
 
         self.stop().await?;
 
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-        self.initialize().await?;
-        self.start().await?;
-
-        info!("Spotify Connect restarted successfully");
+        info!("Spotify Connect stopped, ready for re-initialization");
         Ok(())
     }
 
+    /// Returns true only when the session exists AND is still valid.
+    ///
+    /// When the session is `None` (never initialized), this returns false.
     pub fn is_initialized(&self) -> bool {
         self.session.as_ref().map(|s| !s.is_invalid()).unwrap_or(false)
     }
 
+    /// Returns true only when the session exists BUT has become invalid
+    /// (i.e. it was previously initialized but is now stale).
+    ///
+    /// When the session is `None` (never initialized), this also returns
+    /// false. This is intentional: the app loop checks `!is_initialized()`
+    /// first, then `needs_reinit()` to decide whether to clean up before
+    /// re-initializing. A session that was never created needs neither
+    /// cleanup nor re-init detection — it simply needs initialization.
     pub fn needs_reinit(&self) -> bool {
         self.session.as_ref().map(|s| s.is_invalid()).unwrap_or(false)
     }
 
+    /// Sets the initial volume (0–65535) used when the next session is created.
     pub fn set_initial_volume(&mut self, volume: u16) {
         self.initial_volume = volume;
     }
 
+    /// Sets the playback volume as a percentage (0–100) of the full u16 range.
     pub fn set_volume(&self, volume_pct: u8) -> Result<()> {
         let spirc = self.spirc.as_ref().context("Spirc not initialized")?;
-        let volume = (volume_pct as u32 * u16::MAX as u32 / 100) as u16;
-        spirc.set_volume(volume).context("Failed to set volume")
+        spirc.set_volume(pct_to_librespot_volume(volume_pct)).context("Failed to set volume")
     }
 
+    /// Loads and starts playing a playlist identified by its Spotify URI.
     pub async fn load_track(&self, playlist_uri: &str) -> Result<()> {
         let spirc = self
             .spirc
@@ -215,38 +223,43 @@ impl SpotifyConnect {
         Ok(())
     }
 
+    /// Sends a play command to the active Spirc session.
     pub fn play(&self) -> Result<()> {
         let spirc = self.spirc.as_ref().context("Spirc not initialized")?;
         spirc.play().context("Failed to send play command")
     }
 
+    /// Sends a pause command to the active Spirc session.
     pub fn pause(&self) -> Result<()> {
         let spirc = self.spirc.as_ref().context("Spirc not initialized")?;
         spirc.pause().context("Failed to send pause command")
     }
 
+    /// Skips to the next track in the current playback context.
     pub fn next(&self) -> Result<()> {
         let spirc = self.spirc.as_ref().context("Spirc not initialized")?;
         spirc.next().context("Failed to send next command")
     }
 
+    /// Skips to the previous track in the current playback context.
     pub fn previous(&self) -> Result<()> {
         let spirc = self.spirc.as_ref().context("Spirc not initialized")?;
         spirc.prev().context("Failed to send prev command")
     }
 
-    pub fn validate_playlist(&self, playlist_uri: &str) -> bool {
-        SpotifyUri::from_uri(playlist_uri).is_ok()
+    /// Convenience method that stops the Spotify Connect service and then
+    /// re-initializes it with the given access token.
+    pub async fn restart_with_token(
+        &mut self,
+        access_token: String,
+    ) -> Result<()> {
+        self.stop_and_wait().await?;
+        self.initialize_with_token(access_token).await
     }
 }
 
 impl Drop for SpotifyConnect {
     fn drop(&mut self) {
-        if let Some(spirc) = self.spirc.take() {
-            if let Err(e) = spirc.shutdown() {
-                warn!("Spirc shutdown error during drop: {}", e);
-            }
-        }
         if let Some(task) = self.spirc_task.take() {
             info!("Spotify Connect service shutting down...");
             task.abort();

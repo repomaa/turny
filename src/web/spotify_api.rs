@@ -1,5 +1,6 @@
-use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+const API_BASE: &str = "https://api.spotify.com/v1";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PlaylistInfo {
@@ -22,6 +23,82 @@ pub struct CurrentlyPlaying {
     pub duration_ms: u32,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum SpotifyApiError {
+    #[error("Unauthorized (401)")]
+    Unauthorized,
+    #[error("HTTP error: {0}")]
+    HttpError(String),
+    #[error("Parse error: {0}")]
+    ParseError(String),
+    #[error("Rate limited (429)")]
+    RateLimited,
+    #[error("{0}")]
+    Other(String),
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaylistsResponse {
+    items: Vec<PlaylistItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaylistItem {
+    id: String,
+    uri: String,
+    name: Option<String>,
+    images: Vec<PlaylistImage>,
+    owner: PlaylistOwner,
+    tracks: PlaylistTracks,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PlaylistImage {
+    url: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct PlaylistOwner {
+    display_name: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct PlaylistTracks {
+    total: u64,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct CurrentlyPlayingResponse {
+    is_playing: bool,
+    progress_ms: u64,
+    item: Option<CurrentlyPlayingItem>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct CurrentlyPlayingItem {
+    name: String,
+    duration_ms: u64,
+    artists: Vec<CurrentlyPlayingArtist>,
+    album: CurrentlyPlayingAlbum,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct CurrentlyPlayingArtist {
+    name: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct CurrentlyPlayingAlbum {
+    name: String,
+    images: Vec<PlaylistImage>,
+}
+
 #[derive(Clone)]
 pub struct SpotifyApi {
     http_client: reqwest::Client,
@@ -29,135 +106,109 @@ pub struct SpotifyApi {
 
 impl SpotifyApi {
     pub fn new() -> Self {
-        Self {
-            http_client: reqwest::Client::new(),
-        }
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("default reqwest client must build");
+        Self { http_client }
     }
 
-    pub async fn get_user_playlists(&self, access_token: &str) -> Result<Vec<PlaylistInfo>> {
+    pub async fn get_user_playlists(&self, access_token: &str) -> Result<Vec<PlaylistInfo>, SpotifyApiError> {
         let response = self
             .http_client
-            .get("https://api.spotify.com/v1/me/playlists?limit=50")
+            .get(format!("{}{}", API_BASE, "/me/playlists?limit=50"))
             .bearer_auth(access_token)
             .send()
             .await
-            .context("Failed to fetch user playlists")?;
+            .map_err(|e| SpotifyApiError::Other(format!("Failed to fetch playlists: {}", e)))?;
 
         if response.status() == reqwest::StatusCode::NO_CONTENT {
             return Ok(Vec::new());
         }
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!(
-                "Spotify API error ({}): {}",
-                status,
-                body
-            ));
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(SpotifyApiError::RateLimited);
         }
 
-        let json: serde_json::Value = response
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SpotifyApiError::Unauthorized);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            // unwrap_or_default: only for the error message body, not the success path
+            let body = response.text().await.unwrap_or_default();
+            return Err(SpotifyApiError::HttpError(format!("Spotify API error ({}): {}", status, body)));
+        }
+
+        let parsed: PlaylistsResponse = response
             .json()
             .await
-            .context("Failed to parse playlists response")?;
+            .map_err(|e| SpotifyApiError::ParseError(format!("Failed to parse playlists: {}", e)))?;
 
-        let items = json["items"]
-            .as_array()
-            .map(|a| a.as_slice())
-            .unwrap_or(&[]);
-
-        let playlists = items
-            .iter()
-            .map(|item| {
-                let id = item["id"].as_str().unwrap_or("").to_string();
-                let uri = item["uri"].as_str().unwrap_or("").to_string();
-                let name = item["name"].as_str().unwrap_or("").to_string();
-                let images: Vec<String> = item["images"]
-                    .as_array()
-                    .map(|imgs| {
-                        imgs.iter()
-                            .filter_map(|i| i["url"].as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let owner = item["owner"]["display_name"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string();
-                let track_count = item["tracks"]["total"].as_u64().unwrap_or(0) as u32;
-
-                PlaylistInfo {
-                    id,
-                    uri,
-                    name,
-                    images,
-                    owner,
-                    track_count,
-                }
-            })
-            .collect();
+        let playlists = parsed.items.into_iter().map(|item| {
+            let images: Vec<String> = item.images.into_iter().map(|img| img.url).filter(|u| !u.is_empty()).collect();
+            PlaylistInfo {
+                id: item.id,
+                uri: item.uri,
+                name: item.name.unwrap_or_default(),
+                images,
+                owner: item.owner.display_name,
+                track_count: item.tracks.total as u32,
+            }
+        }).collect();
 
         Ok(playlists)
     }
 
-    pub async fn get_currently_playing(&self, access_token: &str) -> Result<Option<CurrentlyPlaying>> {
+    pub async fn get_currently_playing(&self, access_token: &str) -> Result<Option<CurrentlyPlaying>, SpotifyApiError> {
         let response = self
             .http_client
-            .get("https://api.spotify.com/v1/me/player/currently-playing")
+            .get(format!("{}{}", API_BASE, "/me/player/currently-playing"))
             .bearer_auth(access_token)
             .send()
             .await
-            .context("Failed to fetch currently playing")?;
+            .map_err(|e| SpotifyApiError::Other(format!("Failed to fetch currently playing: {}", e)))?;
 
         if response.status() == reqwest::StatusCode::NO_CONTENT {
             return Ok(None);
         }
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!(
-                "Spotify API error ({}): {}",
-                status,
-                body
-            ));
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(SpotifyApiError::RateLimited);
         }
 
-        let json: serde_json::Value = response
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SpotifyApiError::Unauthorized);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            // unwrap_or_default: only for the error message body, not the success path
+            let body = response.text().await.unwrap_or_default();
+            return Err(SpotifyApiError::HttpError(format!("Spotify API error ({}): {}", status, body)));
+        }
+
+        let parsed: CurrentlyPlayingResponse = response
             .json()
             .await
-            .context("Failed to parse currently playing response")?;
+            .map_err(|e| SpotifyApiError::ParseError(format!("Failed to parse currently playing: {}", e)))?;
 
-        let is_playing = json["is_playing"].as_bool().unwrap_or(false);
-        let progress_ms = json["progress_ms"].as_u64().unwrap_or(0) as u32;
-
-        let item = &json["item"];
-        let track_name = item["name"].as_str().unwrap_or("").to_string();
-        let duration_ms = item["duration_ms"].as_u64().unwrap_or(0) as u32;
-
-        let artist = item["artists"]
-            .as_array()
-            .and_then(|artists| artists.first())
-            .and_then(|a| a["name"].as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let album = item["album"]["name"].as_str().unwrap_or("").to_string();
-        let album_art = item["album"]["images"]
-            .as_array()
-            .and_then(|imgs| imgs.first())
-            .and_then(|i| i["url"].as_str())
-            .map(|s| s.to_string());
-
-        Ok(Some(CurrentlyPlaying {
-            track_name,
-            artist,
-            album,
-            album_art,
-            is_playing,
-            progress_ms,
-            duration_ms,
-        }))
+        match parsed.item {
+            Some(item) => {
+                let artist = item.artists.first().map(|a| a.name.clone()).unwrap_or_default();
+                let album_art = item.album.images.first().map(|img| img.url.clone()).filter(|u| !u.is_empty());
+                Ok(Some(CurrentlyPlaying {
+                    track_name: item.name,
+                    artist,
+                    album: item.album.name,
+                    album_art,
+                    is_playing: parsed.is_playing,
+                    progress_ms: parsed.progress_ms as u32,
+                    duration_ms: item.duration_ms as u32,
+                }))
+            }
+            None => Ok(None),
+        }
     }
 }

@@ -9,7 +9,7 @@ use crate::audio;
 use crate::auth::{AuthManager, TokenInfo};
 use crate::config::TurnyConfig;
 use crate::hardware::{ButtonEvent, HardwareManager};
-use crate::spotify_connect::SpotifyConnect;
+use crate::spotify_connect::{pct_to_librespot_volume, SpotifyConnect};
 use crate::state::StateManager;
 use crate::web::{Db, PlayerCommand, WebEvent};
 
@@ -27,7 +27,12 @@ pub struct TurnyApp {
 
 impl TurnyApp {
     /// Create a new Turny application instance
-    pub async fn new(config: TurnyConfig, db: Option<Arc<Db>>) -> Result<Self> {
+    pub async fn new(
+        config: TurnyConfig,
+        db: Option<Arc<Db>>,
+        event_tx: Option<broadcast::Sender<WebEvent>>,
+        player_cmd_rx: Option<mpsc::Receiver<PlayerCommand>>,
+    ) -> Result<Self> {
         info!("Initializing Turny application...");
 
         // Validate configuration
@@ -36,9 +41,16 @@ impl TurnyApp {
         // Initialize state manager
         let state_manager = StateManager::new();
 
-        // Initialize hardware
-        let hardware = HardwareManager::new()
-            .context("Failed to initialize hardware")?;
+        // Initialize hardware — wrapped in spawn_blocking because
+        // HardwareManager::new() performs blocking GPIO/SPI init including
+        // std::thread::sleep for the MFRC522 hardware reset sequence.
+        let gpio_config = config.gpio.clone();
+        let hardware = tokio::task::spawn_blocking(move || {
+            HardwareManager::new(&gpio_config)
+        })
+        .await
+        .context("Hardware init task panicked")?
+        .context("Failed to initialize hardware")?;
 
         // Initialize Spotify Connect
         let spotify_connect = SpotifyConnect::new("Turny Speaker".to_string());
@@ -50,7 +62,7 @@ impl TurnyApp {
             config.spotify.redirect_uri.clone(),
             config.advanced.scopes.clone(),
             db.clone(),
-        ));
+        ).await);
 
         info!("Turny application initialized successfully");
 
@@ -60,9 +72,9 @@ impl TurnyApp {
             hardware,
             spotify_connect,
             auth_manager,
-            db: None,
-            event_tx: None,
-            player_cmd_rx: None,
+            db,
+            event_tx,
+            player_cmd_rx,
         })
     }
 
@@ -76,52 +88,35 @@ impl TurnyApp {
 
         // Load persisted volume and set it as initial volume for Spotify Connect
         let default_vol = self.config.settings.default_volume;
-        let volume = if let Some(db) = &self.db {
-            db.get_volume().unwrap_or(None).unwrap_or(default_vol)
-        } else {
-            default_vol
+        let volume = match &self.db {
+            Some(db) => db.get_volume().await.ok().flatten().unwrap_or(default_vol),
+            None => default_vol,
         };
-        let vol_u16 = (volume as u32 * u16::MAX as u32 / 100) as u16;
-        self.spotify_connect.set_initial_volume(vol_u16);
+        self.spotify_connect.set_initial_volume(pct_to_librespot_volume(volume));
 
         // Initialize Spotify Connect with the token
         self.spotify_connect.initialize_with_token(
             token_info.access_token,
-            token_info.refresh_token,
         ).await.context("Failed to initialize Spotify Connect")?;
-
-        self.spotify_connect.start().await
-            .context("Failed to start Spotify Connect")?;
 
         info!("Spotify services initialized successfully");
         Ok(())
     }
 
-    /// Get OAuth URL for authentication
+    /// Get OAuth URL for authentication (used in tests)
+    #[allow(dead_code)]
     pub fn get_oauth_url(&self) -> String {
         self.auth_manager.get_auth_url()
     }
 
-    /// Authenticate with redirect URL (simplified OAuth flow)
-    pub async fn authenticate_with_redirect_url(&self, redirect_url: &str) -> Result<TokenInfo> {
-        self.auth_manager.authenticate_with_redirect_url(redirect_url).await
-    }
-
     /// Check if authenticated
-    pub async fn is_authenticated(&self) -> bool {
-        self.auth_manager.has_valid_token().await
+    pub fn is_authenticated(&self) -> Result<bool> {
+        self.auth_manager.has_valid_token()
     }
 
     /// Refresh token using existing refresh token
     pub async fn refresh_token(&self) -> Result<TokenInfo> {
         self.auth_manager.ensure_valid_token().await
-    }
-
-    /// Clear authentication (logout)
-    pub async fn clear_authentication(&self) -> Result<()> {
-        self.auth_manager.clear_token().await;
-        info!("Authentication cleared");
-        Ok(())
     }
 
     /// Check if Spotify Connect is initialized
@@ -139,18 +134,6 @@ impl TurnyApp {
         self.state_manager.clone()
     }
 
-    /// Set web integration components
-    pub fn set_web_integration(
-        &mut self,
-        db: Arc<Db>,
-        event_tx: broadcast::Sender<WebEvent>,
-        player_cmd_rx: mpsc::Receiver<PlayerCommand>,
-    ) {
-        self.db = Some(db);
-        self.event_tx = Some(event_tx);
-        self.player_cmd_rx = Some(player_cmd_rx);
-    }
-
     /// Main application loop
     pub async fn run(&mut self) -> Result<()> {
         info!("Starting Turny application main loop...");
@@ -164,7 +147,7 @@ impl TurnyApp {
             // (re)initialize. A timeout is critical: Spirc::new() /
             // Session::connect() can block for hours if Spotify APs are
             // unreachable, which would freeze the entire main loop.
-            if self.auth_manager.has_valid_token().await
+            if self.auth_manager.has_valid_token()?
                 && !self.spotify_connect.is_initialized()
             {
                 if self.spotify_connect.needs_reinit() {
@@ -199,12 +182,28 @@ impl TurnyApp {
             }
 
             // Check for web player commands
-            while let Some(cmd) = self.player_cmd_rx.as_mut().and_then(|rx| rx.try_recv().ok()) {
+            let pending_cmds: Vec<PlayerCommand> = if let Some(rx) = self.player_cmd_rx.as_mut() {
+                let mut cmds = Vec::new();
+                loop {
+                    match rx.try_recv() {
+                        Ok(cmd) => cmds.push(cmd),
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                            log::warn!("Player command channel disconnected");
+                            break;
+                        }
+                    }
+                }
+                cmds
+            } else {
+                Vec::new()
+            };
+            for cmd in pending_cmds {
                 self.handle_player_command(cmd).await?;
             }
 
             // Small delay to prevent busy waiting
-            sleep(crate::config::POLL_INTERVAL).await;
+            sleep(self.config.poll_interval_duration()).await;
         }
     }
 
@@ -213,30 +212,26 @@ impl TurnyApp {
         debug!("RFID card detected: {}", card_id);
 
         // Reset absence count
-        self.state_manager.reset_absence_count()?;
+        self.state_manager.reset_absence_count();
 
         // Broadcast RFID detected event
-        if let Some(tx) = &self.event_tx {
-            let existing_mapping = if let Some(db) = &self.db {
-                db.get_mapping_for_card(&card_id)
-                    .ok()
-                    .flatten()
-                    .map(|m| crate::web::events::ExistingMapping {
-                        playlist_uri: m.playlist_uri,
-                        playlist_name: m.playlist_name,
-                    })
-            } else {
-                None
-            };
-            let _ = tx.send(WebEvent::RfidDetected {
-                card_id: card_id.clone(),
-                existing_mapping,
-            });
-        }
+        let existing_mapping = if let Some(db) = &self.db {
+            db.get_mapping_for_card(&card_id).await.ok().flatten()
+                .map(|m| crate::web::events::ExistingMapping {
+                    playlist_uri: m.playlist_uri,
+                    playlist_name: m.playlist_name,
+                })
+        } else {
+            None
+        };
+        self.broadcast(WebEvent::RfidDetected {
+            card_id: card_id.clone(),
+            existing_mapping,
+        });
 
         // Store last card in DB
         if let Some(db) = &self.db {
-            if let Err(e) = db.set_last_card(&card_id) {
+            if let Err(e) = db.set_last_card(&card_id).await {
                 warn!("Failed to store last card: {}", e);
             }
         }
@@ -249,7 +244,7 @@ impl TurnyApp {
         if current_card.as_ref() != Some(&card_id) {
             // Look up playlist: DB first, then config fallback
             let playlist_uri = if let Some(db) = &self.db {
-                db.get_playlist_for_card(&card_id)?
+                db.get_playlist_for_card(&card_id).await?
             } else {
                 self.config.get_playlist_for_card(&card_id).cloned()
             };
@@ -257,33 +252,20 @@ impl TurnyApp {
             if let Some(playlist_uri) = playlist_uri {
                 info!("Starting playback for card {} with playlist {}", card_id, playlist_uri);
 
-                // Validate playlist before starting playback
-                if self.spotify_connect.validate_playlist(&playlist_uri) {
-                    info!("Playlist {} validated successfully", playlist_uri);
-                } else {
-                    warn!("Playlist {} is invalid, but attempting playback anyway", playlist_uri);
-                }
-
                 // Start playback — only update state/LED on success so that
                 // a failed attempt (e.g. Spirc not yet ready) will be retried
                 // on the next poll instead of being silently swallowed.
                 match self.start_playback(&playlist_uri).await {
                     Ok(()) => {
-                        self.state_manager.set_current_card(card_id.clone(), playlist_uri.clone())?;
-                        self.state_manager.set_playing(true)?;
+                        self.state_manager.set_current_card(card_id.clone(), playlist_uri.clone());
+                        self.state_manager.set_playing(true);
                         self.hardware.led_on()?;
 
-                        if let Some(tx) = &self.event_tx {
-                            let _ = tx.send(WebEvent::PlaybackStarted {
-                                card_id: card_id.clone(),
-                                playlist_uri: playlist_uri.clone(),
-                            });
-                            let _ = tx.send(WebEvent::StateChanged {
-                                is_playing: true,
-                                current_card: Some(card_id),
-                                context_uri: Some(playlist_uri),
-                            });
-                        }
+                        self.broadcast(WebEvent::PlaybackStarted {
+                            card_id: card_id.clone(),
+                            playlist_uri: playlist_uri.clone(),
+                        });
+                        self.broadcast_state_change(true, Some(card_id), Some(playlist_uri));
                     }
                     Err(e) => {
                         warn!("Failed to start playback for card {}: {}", card_id, e);
@@ -300,7 +282,7 @@ impl TurnyApp {
     /// Handle no card detected
     async fn handle_no_card(&mut self) -> Result<()> {
         // Increment absence count
-        self.state_manager.increment_absence_count()?;
+        self.state_manager.increment_absence_count();
 
         // Only auto-pause if we are actually playing and the card has been
         // absent long enough. The absence_threshold is in poll cycles
@@ -308,7 +290,7 @@ impl TurnyApp {
         // miss a card that is still on the reader. To avoid thrashing
         // (play → pause → play → pause), we require the absence count to
         // reach the threshold *and* not reset immediately on the next read.
-        if self.state_manager.should_auto_pause(self.config.settings.absence_threshold as u32)? {
+        if self.state_manager.should_auto_pause(self.config.settings.absence_threshold as u32) {
             let is_playing = self.state_manager.with_state(|state| state.is_playing)?;
 
             if is_playing {
@@ -316,7 +298,7 @@ impl TurnyApp {
                 if let Err(e) = self.pause_playback().await {
                     warn!("Failed to auto-pause: {}", e);
                 }
-                self.state_manager.set_playing(false)?;
+                self.state_manager.set_playing(false);
 
                 // Clear current card so re-placing the same card restarts playback
                 self.state_manager.with_state_mut(|state| {
@@ -326,14 +308,8 @@ impl TurnyApp {
                 self.hardware.led_off()?;
 
                 // Broadcast state change
-                if let Some(tx) = &self.event_tx {
-                    let _ = tx.send(WebEvent::PlaybackPaused);
-                    let _ = tx.send(WebEvent::StateChanged {
-                        is_playing: false,
-                        current_card: None,
-                        context_uri: None,
-                    });
-                }
+                self.broadcast(WebEvent::PlaybackPaused);
+                self.broadcast_state_change(false, None, None);
             }
         }
 
@@ -345,7 +321,6 @@ impl TurnyApp {
         match event {
             ButtonEvent::Pressed => {
                 debug!("Button pressed");
-                self.state_manager.start_button_press()?;
             }
             ButtonEvent::Released(duration) => {
                 debug!("Button released after {:?}", duration);
@@ -357,10 +332,10 @@ impl TurnyApp {
 
     /// Handle button release with duration-based actions
     async fn handle_button_release(&mut self, duration: Duration) -> Result<()> {
-        if duration >= crate::config::MANUAL_RESET_THRESHOLD {
+        if duration >= self.config.settings.manual_reset_threshold {
             // Long press - manual reset
             self.manual_reset().await?;
-        } else if duration >= crate::config::PREVIOUS_TRACK_THRESHOLD {
+        } else if duration >= self.config.settings.previous_track_threshold {
             // Medium press - previous track
             info!("Previous track requested");
             if let Err(e) = self.spotify_connect.previous() {
@@ -388,20 +363,16 @@ impl TurnyApp {
                 if let Err(e) = self.spotify_connect.play() {
                     error!("Failed to play: {}", e);
                 }
-                self.state_manager.set_playing(true)?;
-                if let Some(tx) = &self.event_tx {
-                    let _ = tx.send(WebEvent::PlaybackResumed);
-                }
+                self.state_manager.set_playing(true);
+                self.broadcast(WebEvent::PlaybackResumed);
             }
             PlayerCommand::Pause => {
                 info!("Web: pause command");
                 if let Err(e) = self.spotify_connect.pause() {
                     error!("Failed to pause: {}", e);
                 }
-                self.state_manager.set_playing(false)?;
-                if let Some(tx) = &self.event_tx {
-                    let _ = tx.send(WebEvent::PlaybackPaused);
-                }
+                self.state_manager.set_playing(false);
+                self.broadcast(WebEvent::PlaybackPaused);
             }
             PlayerCommand::Next => {
                 info!("Web: next command");
@@ -421,13 +392,11 @@ impl TurnyApp {
                     error!("Failed to set volume: {}", e);
                 }
                 if let Some(db) = &self.db {
-                    if let Err(e) = db.set_volume(volume) {
+                    if let Err(e) = db.set_volume(volume).await {
                         warn!("Failed to persist volume: {}", e);
                     }
                 }
-                if let Some(tx) = &self.event_tx {
-                    let _ = tx.send(WebEvent::VolumeChanged { volume });
-                }
+                self.broadcast(WebEvent::VolumeChanged { volume });
             }
         }
         Ok(())
@@ -441,7 +410,7 @@ impl TurnyApp {
         self.blink_led().await?;
 
         // Reset state
-        self.state_manager.reset_state()?;
+        self.state_manager.reset_state();
 
         // Stop playback
         if let Err(e) = self.pause_playback().await {
@@ -463,15 +432,12 @@ impl TurnyApp {
         info!("Restarting Spotify Connect...");
 
         // Get current token
-        if let Some(token_info) = self.auth_manager.get_token_info().await {
-            self.spotify_connect.restart().await?;
-            self.spotify_connect.initialize_with_token(
-                token_info.access_token,
-                token_info.refresh_token,
-            ).await?;
-        } else {
-            return Err(anyhow::anyhow!("No valid token for Spotify Connect restart"));
-        }
+        let token_info = self.auth_manager.get_token_info()?
+            .context("No valid token for Spotify Connect restart")?;
+
+        self.spotify_connect.restart_with_token(
+            token_info.access_token,
+        ).await?;
 
         info!("Spotify Connect restarted successfully");
         Ok(())
@@ -481,8 +447,7 @@ impl TurnyApp {
     async fn start_playback(&mut self, playlist_uri: &str) -> Result<()> {
         info!("Starting playback with playlist: {}", playlist_uri);
 
-        // Ensure we have a valid token
-        self.auth_manager.ensure_valid_token().await?;
+        // Token is ensured by the caller (initialize_spotify or main loop reinit)
 
         // Start playback using Spirc — wrap in timeout as Spirc/load can hang
         // after a 429 rate-limit or network issue
@@ -522,8 +487,15 @@ impl TurnyApp {
         }
 
         // Play audio startup sound
-        if let Err(e) = audio::play_startup_sound(&self.config.audio.startup_sound).await {
-            warn!("Failed to play startup sound: {}", e);
+        match audio::AudioManager::new() {
+            Ok(audio_manager) => {
+                if let Err(e) = audio_manager.play_startup_sound(&self.config.audio.startup_sound).await {
+                    warn!("Failed to play startup sound: {}", e);
+                }
+            }
+            Err(e) => {
+                warn!("Failed to initialize audio system: {}", e);
+            }
         }
 
         Ok(())
@@ -531,8 +503,8 @@ impl TurnyApp {
 
     /// Get application status summary
     pub async fn get_status(&self) -> Result<String> {
-        let state_summary = self.state_manager.get_summary()?;
-        let is_authenticated = self.auth_manager.has_valid_token().await;
+        let state_summary = self.state_manager.get_summary();
+        let is_authenticated = self.auth_manager.has_valid_token()?;
         let is_connect_initialized = self.spotify_connect.is_initialized();
 
         let is_playing = self.state_manager.with_state(|state| state.is_playing)?;
@@ -566,6 +538,22 @@ impl TurnyApp {
         info!("Turny application shutdown completed");
         Ok(())
     }
+
+    /// Broadcast a web event to all connected WebSocket clients
+    fn broadcast(&self, event: WebEvent) {
+        if let Some(tx) = &self.event_tx {
+            let _ = tx.send(event);
+        }
+    }
+
+    /// Broadcast a playback state change event.
+    fn broadcast_state_change(&self, is_playing: bool, card_id: Option<String>, context_uri: Option<String>) {
+        self.broadcast(WebEvent::StateChanged {
+            is_playing,
+            current_card: card_id,
+            context_uri,
+        });
+    }
 }
 
 #[cfg(test)]
@@ -575,34 +563,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_app_creation() {
+        // On Pi: app creation succeeds. On non-Pi: fails with hardware error.
+        // Both outcomes are valid — we just verify no panic.
         let config = TurnyConfig::default();
-
-        let result = TurnyApp::new(config, None).await;
-
-        match result {
-            Ok(_app) => {
-                assert!(true);
-            }
-            Err(e) => {
-                println!("Expected failure in test environment: {}", e);
-                assert!(true);
-            }
-        }
+        let _ = TurnyApp::new(config, None, None, None).await;
     }
 
-    #[test]
-    fn test_oauth_url_generation() {
+    #[tokio::test]
+    async fn test_oauth_url_generation() {
         let config = TurnyConfig::default();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-
-        let app = rt.block_on(async {
-            match TurnyApp::new(config, None).await {
-                Ok(app) => Some(app),
-                Err(_) => None,
-            }
-        });
-
-        if let Some(app) = app {
+        if let Ok(app) = TurnyApp::new(config, None, None, None).await {
             let oauth_url = app.get_oauth_url();
             assert!(oauth_url.contains("accounts.spotify.com/authorize"));
             assert!(oauth_url.contains("client_id"));
@@ -613,8 +583,8 @@ mod tests {
     async fn test_authentication_state() {
         let config = TurnyConfig::default();
 
-        if let Ok(app) = TurnyApp::new(config, None).await {
-            assert!(!app.is_authenticated().await);
+        if let Ok(app) = TurnyApp::new(config, None, None, None).await {
+            assert!(!app.is_authenticated().unwrap_or(false));
 
             let oauth_url = app.get_oauth_url();
             assert!(!oauth_url.is_empty());

@@ -7,6 +7,9 @@
 client_id = "your_spotify_client_id_here"
 client_secret = "your_spotify_client_secret_here"
 redirect_uri = "https://repomaa.github.io/turny/auth-proxy/"
+# Note: This must match the redirect URI registered in your Spotify Developer Dashboard.
+# The default uses a GitHub Pages OAuth proxy that decodes the state parameter and
+# redirects back to the Pi's origin.
 
 [gpio]
 # GPIO pin assignments
@@ -23,7 +26,7 @@ poll_interval = 50
 default_volume = 70
 
 # Number of absence readings before pausing
-absence_threshold = 3
+absence_threshold = 30
 
 [playlists]
 # Map RFID card IDs to Spotify playlist URIs
@@ -45,29 +48,22 @@ absence_threshold = 3
 [audio]
 startup_sound = "startup.wav"
 
-# System command for playing audio files
-audio_player = "aplay"
+[web]
+# Web server listen address
+host = "0.0.0.0"
 
-[logging]
-# Log level: error, warn, info, debug, trace
-level = "info"
+# Web server port
+port = 8080
 
-# Log to file (optional)
-# file = "/var/log/turny.log"
+# External URL for OAuth callbacks (optional)
+# external_url = "http://192.168.1.100:8080"
 
 [advanced]
 # Spotify API scopes (don't change unless you know what you're doing)
 scopes = [
+    "streaming",
     "user-read-playback-state",
-    "user-modify-playback-state"
+    "user-modify-playback-state",
+    "user-read-currently-playing",
+    "playlist-read-private"
 ]
-
-# Spotifyd service management
-spotifyd_service = "spotifyd"
-spotifyd_user_service = true
-
-# Maximum retries for heartbeat checks
-max_heartbeat_retries = 10
-
-# Retry delay multiplier (seconds)
-retry_delay_multiplier = 0.5

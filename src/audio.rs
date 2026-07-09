@@ -1,9 +1,7 @@
 use anyhow::{Context, Result};
-use log::{info, warn};
 use rodio::{Decoder, OutputStream, Sink};
 use std::fs::File;
 use std::io::BufReader;
-use std::path::Path;
 use std::time::Duration;
 
 /// Audio manager for handling sound playback
@@ -29,10 +27,9 @@ impl AudioManager {
     
     /// Play an audio file
     pub async fn play_file(&self, path: &str) -> Result<()> {
-        if !Path::new(path).exists() {
-            return Err(anyhow::anyhow!("Audio file not found: {}", path));
-        }
-        
+        // Synchronous file I/O is acceptable here — this is only used for the
+        // short startup sound, not in the hot path. rodio's Decoder/Source
+        // types are not guaranteed Send, so spawn_blocking is not viable.
         let file = File::open(path)
             .with_context(|| format!("Failed to open audio file: {}", path))?;
         
@@ -40,10 +37,12 @@ impl AudioManager {
             .with_context(|| format!("Failed to decode audio file: {}", path))?;
         
         self.sink.append(source);
-        
-        // Wait for playback to complete
+
+        // Wait for playback to complete. rodio's sleep_until_end() is
+        // synchronous and Sink is not Clone, so we can't move it into
+        // spawn_blocking. Use a polling loop with a short interval instead.
         while !self.sink.empty() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
         
         Ok(())
@@ -51,23 +50,6 @@ impl AudioManager {
     
     /// Play startup sound
     pub async fn play_startup_sound(&self, file_path: &str) -> Result<()> {
-        info!("Playing {}", file_path);
         self.play_file(file_path).await
     }
-}
-
-/// Convenience function to play startup sound without managing AudioManager
-pub async fn play_startup_sound(file_path: &str) -> Result<()> {
-    match AudioManager::new() {
-        Ok(audio_manager) => {
-            if let Err(e) = audio_manager.play_startup_sound(file_path).await {
-                warn!("Failed to play startup sound: {}", e);
-            }
-        }
-        Err(e) => {
-            warn!("Failed to initialize audio system: {}", e);
-        }
-    }
-    
-    Ok(())
 }

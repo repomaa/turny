@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use log::{error, info, warn};
+use log::{info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +19,7 @@ pub struct TokenInfo {
 }
 
 impl TokenInfo {
-    #[cfg(test)]
+    #[allow(dead_code)]
     pub fn new(access_token: String, refresh_token: Option<String>) -> Self {
         Self {
             access_token,
@@ -56,7 +56,11 @@ impl TokenInfo {
     }
 }
 
-/// OAuth authentication manager
+/// OAuth authentication manager.
+///
+/// Uses `std::sync::Mutex` for interior mutability. This is safe because no
+/// `.await` is ever called while holding the lock — all network I/O happens
+/// after the lock is dropped. Do not add `.await` calls inside locked sections.
 pub struct AuthManager {
     client_id: String,
     client_secret: String,
@@ -69,7 +73,7 @@ pub struct AuthManager {
 
 impl AuthManager {
     /// Create a new authentication manager
-    pub fn new(
+    pub async fn new(
         client_id: String,
         client_secret: String,
         redirect_uri: String,
@@ -82,12 +86,15 @@ impl AuthManager {
             redirect_uri,
             scopes,
             token_info: Arc::new(Mutex::new(None)),
-            http_client: Client::new(),
+            http_client: Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("Failed to build auth HTTP client"),
             db,
         };
 
         // Try to load existing token from DB, with file migration fallback
-        if let Err(e) = auth_manager.load_token() {
+        if let Err(e) = auth_manager.load_token().await {
             info!("No existing token found or failed to load: {}", e);
         }
 
@@ -106,18 +113,61 @@ impl AuthManager {
 
         format!(
             "https://accounts.spotify.com/authorize?client_id={}&response_type=code&redirect_uri={}&scope={}&state={}",
-            self.client_id,
+            urlencoding::encode(&self.client_id),
             urlencoding::encode(&self.redirect_uri),
             urlencoding::encode(&scope_string),
             state
         )
     }
 
+    fn lock_token(&self) -> Result<std::sync::MutexGuard<'_, Option<TokenInfo>>> {
+        self.token_info.lock().map_err(|e| anyhow::anyhow!("AuthManager mutex lock error: {}", e))
+    }
+
+    /// Send a token request to the Spotify OAuth endpoint and store the result.
+    async fn perform_token_request(
+        &self,
+        params: &[(&str, &str)],
+        default_refresh_token: Option<String>,
+    ) -> Result<TokenInfo> {
+        let token_url = "https://accounts.spotify.com/api/token";
+        let response = self
+            .http_client
+            .post(token_url)
+            .form(params)
+            .send()
+            .await
+            .context("Failed to send token request")?;
+
+        if !response.status().is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(anyhow::anyhow!("Token request failed: {}", error_text));
+        }
+
+        let token_response: serde_json::Value = response
+            .json()
+            .await
+            .context("Failed to parse token response")?;
+
+        let token_info = parse_token_response(token_response, default_refresh_token)?;
+
+        {
+            let mut token_guard = self.lock_token()?;
+            *token_guard = Some(token_info.clone());
+        }
+
+        self.save_token(&token_info).await.context("Failed to save token")?;
+
+        Ok(token_info)
+    }
+
     /// Exchange authorization code for access token
     pub async fn exchange_code_for_token(&self, code: &str) -> Result<TokenInfo> {
         info!("Exchanging authorization code for access token");
 
-        let token_url = "https://accounts.spotify.com/api/token";
         let params = [
             ("grant_type", "authorization_code"),
             ("code", code),
@@ -126,61 +176,7 @@ impl AuthManager {
             ("client_secret", &self.client_secret),
         ];
 
-        let response = self
-            .http_client
-            .post(token_url)
-            .form(&params)
-            .send()
-            .await
-            .context("Failed to send token exchange request")?;
-
-        if !response.status().is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(anyhow::anyhow!("Token exchange failed: {}", error_text));
-        }
-
-        let token_response: serde_json::Value = response
-            .json()
-            .await
-            .context("Failed to parse token response")?;
-
-        let access_token = token_response["access_token"]
-            .as_str()
-            .context("Missing access token in response")?
-            .to_string();
-
-        let refresh_token = token_response["refresh_token"]
-            .as_str()
-            .map(|s| s.to_string());
-
-        let expires_in = token_response["expires_in"].as_u64();
-
-        let token_type = token_response["token_type"]
-            .as_str()
-            .unwrap_or("Bearer")
-            .to_string();
-
-        let scope = token_response["scope"].as_str().map(|s| s.to_string());
-
-        let mut token_info = TokenInfo {
-            access_token,
-            refresh_token,
-            token_type,
-            expires_in,
-            scope,
-            expires_at: None,
-        };
-
-        token_info.update_expiration();
-
-        // Store the token
-        {
-            let mut token_guard = self.token_info.lock().unwrap();
-            *token_guard = Some(token_info.clone());
-        }
+        let token_info = self.perform_token_request(&params, None).await?;
 
         info!("Successfully exchanged authorization code for access token");
         Ok(token_info)
@@ -189,7 +185,7 @@ impl AuthManager {
     /// Refresh access token using refresh token
     pub async fn refresh_token(&self) -> Result<TokenInfo> {
         let current_token = {
-            let token_guard = self.token_info.lock().unwrap();
+            let token_guard = self.lock_token()?;
             token_guard.clone()
         };
 
@@ -200,111 +196,45 @@ impl AuthManager {
 
         info!("Refreshing access token");
 
-        let token_url = "https://accounts.spotify.com/api/token";
+        let refresh_token_for_params = refresh_token.clone();
         let params = [
             ("grant_type", "refresh_token"),
-            ("refresh_token", &refresh_token),
+            ("refresh_token", &refresh_token_for_params),
             ("client_id", &self.client_id),
             ("client_secret", &self.client_secret),
         ];
 
-        let response = self
-            .http_client
-            .post(token_url)
-            .form(&params)
-            .send()
-            .await
-            .context("Failed to send token refresh request")?;
-
-        if !response.status().is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(anyhow::anyhow!("Token refresh failed: {}", error_text));
-        }
-
-        let token_response: serde_json::Value = response
-            .json()
-            .await
-            .context("Failed to parse token refresh response")?;
-
-        let access_token = token_response["access_token"]
-            .as_str()
-            .context("Missing access token in refresh response")?
-            .to_string();
-
-        let new_refresh_token = token_response["refresh_token"]
-            .as_str()
-            .map(|s| s.to_string())
-            .or(Some(refresh_token)); // Keep old refresh token if new one not provided
-
-        let expires_in = token_response["expires_in"].as_u64();
-
-        let token_type = token_response["token_type"]
-            .as_str()
-            .unwrap_or("Bearer")
-            .to_string();
-
-        let scope = token_response["scope"].as_str().map(|s| s.to_string());
-
-        let mut token_info = TokenInfo {
-            access_token,
-            refresh_token: new_refresh_token,
-            token_type,
-            expires_in,
-            scope,
-            expires_at: None,
-        };
-
-        token_info.update_expiration();
-
-        // Store the updated token
-        {
-            let mut token_guard = self.token_info.lock().unwrap();
-            *token_guard = Some(token_info.clone());
-        }
-
-        // Persist refreshed token to database
-        if let Err(e) = self.save_token(&token_info) {
-            error!("Failed to save refreshed token: {}", e);
-        }
+        let token_info = self.perform_token_request(&params, Some(refresh_token)).await?;
 
         info!("Successfully refreshed access token");
         Ok(token_info)
     }
 
     /// Get current token info
-    pub async fn get_token_info(&self) -> Option<TokenInfo> {
-        let token_guard = self.token_info.lock().unwrap();
-        token_guard.clone()
+    pub fn get_token_info(&self) -> Result<Option<TokenInfo>> {
+        let guard = self.lock_token()?;
+        Ok(guard.clone())
     }
 
     /// Set token information
-    pub async fn set_token_info(&self, token_info: TokenInfo) {
+    pub async fn set_token_info(&self, token_info: TokenInfo) -> Result<()> {
         {
-            let mut token = self.token_info.lock().unwrap();
+            let mut token = self.lock_token()?;
             *token = Some(token_info.clone());
         }
-
-        // Save to database
-        if let Err(e) = self.save_token(&token_info) {
-            error!("Failed to save token: {}", e);
-        }
+        self.save_token(&token_info).await.context("Failed to save token")?;
+        Ok(())
     }
 
     /// Check if we have a valid token
-    pub async fn has_valid_token(&self) -> bool {
-        let token_guard = self.token_info.lock().unwrap();
-        match &*token_guard {
-            Some(token) => !token.is_expired(),
-            None => false,
-        }
+    pub fn has_valid_token(&self) -> Result<bool> {
+        let guard = self.lock_token()?;
+        Ok(guard.as_ref().map_or(false, |t| !t.is_expired()))
     }
 
     /// Ensure we have a valid token, refreshing if necessary
     pub async fn ensure_valid_token(&self) -> Result<TokenInfo> {
-        let token_info = self.get_token_info().await;
+        let token_info = self.get_token_info()?;
 
         match token_info {
             Some(token) => {
@@ -322,26 +252,25 @@ impl AuthManager {
     }
 
     /// Clear stored token
-    pub async fn clear_token(&self) {
+    pub async fn clear_token(&self) -> Result<()> {
         {
-            let mut token = self.token_info.lock().unwrap();
+            let mut token = self.lock_token()?;
             *token = None;
         }
 
         // Remove token from DB
         if let Some(db) = &self.db {
-            if let Err(e) = db.clear_token() {
-                warn!("Failed to remove token from database: {}", e);
-            }
+            db.clear_token().await.context("Failed to remove token from database")?;
         }
+        Ok(())
     }
 
     /// Save token to database (with file migration fallback)
-    fn save_token(&self, token_info: &TokenInfo) -> Result<()> {
+    async fn save_token(&self, token_info: &TokenInfo) -> Result<()> {
         let json = serde_json::to_string_pretty(token_info).context("Failed to serialize token")?;
 
         if let Some(db) = &self.db {
-            db.save_token(&json).context("Failed to save token to database")?;
+            db.save_token(&json).await.context("Failed to save token to database")?;
             info!("Token saved to database");
         } else {
             warn!("No database available, token will not be persisted");
@@ -350,13 +279,13 @@ impl AuthManager {
     }
 
     /// Load token from database, with migration from legacy file
-    fn load_token(&self) -> Result<()> {
+    async fn load_token(&self) -> Result<()> {
         if let Some(db) = &self.db {
-            if let Some(json) = db.load_token()? {
+            if let Some(json) = db.load_token().await? {
                 let token_info: TokenInfo =
                     serde_json::from_str(&json).context("Failed to deserialize token")?;
                 {
-                    let mut token = self.token_info.lock().unwrap();
+                    let mut token = self.lock_token()?;
                     *token = Some(token_info);
                 }
                 info!("Token loaded from database");
@@ -364,22 +293,26 @@ impl AuthManager {
             }
 
             // No token in DB — try migrating from legacy file
-            let file_path = std::env::var("HOME")
-                .map(|h| std::path::PathBuf::from(h).join("spotify_token.json"))
-                .unwrap_or_else(|_| std::path::PathBuf::from("spotify_token.json"));
+            let file_path = match std::env::var("HOME") {
+                Ok(h) => std::path::PathBuf::from(h).join("spotify_token.json"),
+                Err(_) => return Err(anyhow::anyhow!("No token in database and HOME not set, cannot migrate from legacy file")),
+            };
 
-            if file_path.exists() {
+            if tokio::fs::try_exists(&file_path).await.unwrap_or(false) {
                 info!("Found legacy token file, migrating to database...");
-                let json = std::fs::read_to_string(&file_path)
+                let json = tokio::fs::read_to_string(&file_path)
+                    .await
                     .with_context(|| format!("Failed to read legacy token file: {:?}", file_path))?;
                 let token_info: TokenInfo =
                     serde_json::from_str(&json).context("Failed to deserialize legacy token")?;
                 {
-                    let mut token = self.token_info.lock().unwrap();
+                    let mut token = self.lock_token()?;
                     *token = Some(token_info);
                 }
-                db.save_token(&json).context("Failed to migrate token to database")?;
-                let _ = std::fs::remove_file(&file_path);
+                db.save_token(&json).await.context("Failed to migrate token to database")?;
+                if let Err(e) = tokio::fs::remove_file(&file_path).await {
+                    warn!("Failed to remove legacy token file after migration: {}", e);
+                }
                 info!("Token migrated from file to database");
                 return Ok(());
             }
@@ -405,10 +338,45 @@ impl AuthManager {
         let token_info = self.exchange_code_for_token(&code).await?;
 
         // Save token
-        self.set_token_info(token_info.clone()).await;
+        self.set_token_info(token_info.clone()).await?;
 
         Ok(token_info)
     }
+}
+
+fn parse_token_response(
+    token_response: serde_json::Value,
+    default_refresh_token: Option<String>,
+) -> Result<TokenInfo> {
+    let access_token = token_response["access_token"]
+        .as_str()
+        .context("Missing access token in response")?
+        .to_string();
+
+    let refresh_token = token_response["refresh_token"]
+        .as_str()
+        .map(|s| s.to_string())
+        .or(default_refresh_token);
+
+    let expires_in = token_response["expires_in"].as_u64();
+
+    let token_type = token_response["token_type"]
+        .as_str()
+        .unwrap_or("Bearer")
+        .to_string();
+
+    let scope = token_response["scope"].as_str().map(|s| s.to_string());
+
+    let mut token_info = TokenInfo {
+        access_token,
+        refresh_token,
+        token_type,
+        expires_in,
+        scope,
+        expires_at: None,
+    };
+    token_info.update_expiration();
+    Ok(token_info)
 }
 
 #[cfg(test)]
@@ -444,15 +412,16 @@ mod tests {
         assert!(token.will_expire_soon(chrono::Duration::hours(2)));
     }
 
-    #[test]
-    fn test_auth_manager_creation() {
+    #[tokio::test]
+    async fn test_auth_manager_creation() {
         let auth_manager = AuthManager::new(
             "client_id".to_string(),
             "client_secret".to_string(),
             "http://localhost:8080/callback".to_string(),
             vec!["scope1".to_string(), "scope2".to_string()],
             None,
-        );
+        )
+        .await;
 
         let auth_url = auth_manager.get_auth_url();
         assert!(auth_url.contains("client_id"));
@@ -467,18 +436,19 @@ mod tests {
             "http://localhost:8080/callback".to_string(),
             vec!["scope1".to_string()],
             None,
-        );
+        )
+        .await;
 
-        assert!(!auth_manager.has_valid_token().await);
-        assert!(auth_manager.get_token_info().await.is_none());
+        assert!(!auth_manager.has_valid_token().unwrap());
+        assert!(auth_manager.get_token_info().unwrap().is_none());
 
         let token = TokenInfo::new("test_token".to_string(), Some("refresh_token".to_string()));
 
-        auth_manager.set_token_info(token).await;
-        assert!(auth_manager.has_valid_token().await);
-        assert!(auth_manager.get_token_info().await.is_some());
+        auth_manager.set_token_info(token).await.unwrap();
+        assert!(auth_manager.has_valid_token().unwrap());
+        assert!(auth_manager.get_token_info().unwrap().is_some());
 
-        auth_manager.clear_token().await;
-        assert!(!auth_manager.has_valid_token().await);
+        auth_manager.clear_token().await.unwrap();
+        assert!(!auth_manager.has_valid_token().unwrap());
     }
 }

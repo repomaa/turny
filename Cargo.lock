@@ -1135,7 +1135,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 dependencies = [
  "ahash",
- "allocator-api2",
 ]
 
 [[package]]
@@ -1390,9 +1389,9 @@ dependencies = [
 
 [[package]]
 name = "i2cdev"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a01f563561b53e2def844167c92984da13779a53ca409e948a03400633cb8228"
+checksum = "9b940f7497c4f95b863b21cd34c3737b53a67d80d94cf29055d7f7eeca6ffdb4"
 dependencies = [
  "bitflags 2.9.1",
  "byteorder",
@@ -1984,9 +1983,9 @@ dependencies = [
 
 [[package]]
 name = "linux-embedded-hal"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8d566b726e1b6810f66c6f1c769889248439c27f06a59df2881a735454cfa02"
+checksum = "2a8a605c95f708c78554738a12153b213f107d3bd5323f7ce32d6deb3faafb40"
 dependencies = [
  "cast",
  "embedded-hal",
@@ -2792,7 +2791,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3357,9 +3356,9 @@ dependencies = [
 
 [[package]]
 name = "serialport"
-version = "4.7.2"
+version = "4.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdb0bc984f6af6ef8bab54e6cf2071579ee75b9286aa9f2319a0d220c28b0a2b"
+checksum = "a4d91116f97173694f1642263b2ff837f80d933aa837e2314969f6728f661df3"
 dependencies = [
  "bitflags 2.9.1",
  "cfg-if",
@@ -3370,7 +3369,7 @@ dependencies = [
  "nix 0.26.4",
  "scopeguard",
  "unescaper",
- "winapi",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3465,9 +3464,9 @@ dependencies = [
 
 [[package]]
 name = "spidev"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2800c129338c77998c1dcb6d4200447e018beb7d29959eb104cba2d45f83c1a"
+checksum = "32dadd0a877f0652fa52dbc4d2ed9f4877bea5cd30725507b36e1970a5ef0519"
 dependencies = [
  "bitflags 2.9.1",
  "libc",
@@ -4077,7 +4076,6 @@ dependencies = [
  "embedded-hal-bus",
  "env_logger",
  "futures",
- "hashbrown 0.14.5",
  "librespot",
  "librespot-connect",
  "librespot-core",
@@ -4098,7 +4096,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "toml",
- "tower-http",
  "url",
  "urlencoding",
  "uuid",
@@ -4112,9 +4109,9 @@ checksum = "1dccffe3ce07af9386bfd29e80c0ab1a8205a2fc34e4bcd40364df902cfa8f3f"
 
 [[package]]
 name = "unescaper"
-version = "0.1.6"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c01d12e3a56a4432a8b436f293c25f4808bdf9e9f9f98f9260bba1f1bc5a1f26"
+checksum = "7285e83a80ce76f5e7bce79fa41f68d78ba62d1003cf27bf748ab24413808cf4"
 dependencies = [
  "thiserror 2.0.12",
 ]

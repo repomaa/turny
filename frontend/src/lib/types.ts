@@ -30,20 +30,10 @@ export interface NowPlaying {
 	track_name: string;
 	artist: string;
 	album: string;
-	album_art: string;
+	album_art: string | null;
 	is_playing: boolean;
 	progress_ms: number;
 	duration_ms: number;
-}
-
-export interface PlayerState {
-	is_playing: boolean;
-	current_card: string | null;
-	context_uri: string | null;
-}
-
-export interface LastCard {
-	card_id: string;
 }
 
 export interface Volume {
@@ -56,4 +46,5 @@ export type WsEvent =
 	| { type: 'PlaybackPaused' }
 	| { type: 'PlaybackResumed' }
 	| { type: 'StateChanged'; is_playing: boolean; current_card: string | null; context_uri: string | null }
-	| { type: 'VolumeChanged'; volume: number };
+	| { type: 'VolumeChanged'; volume: number }
+	| { type: 'LagDetected' };

@@ -30,11 +30,12 @@ The system currently includes:
 
 ### Pin Configuration
 
-The implementation uses the exact same pins as the reference Python code:
+The implementation uses the following pin assignments (matching the config defaults):
 
-1. **LED on GPIO 22** (matches reference.py exactly)
-2. **MFRC522 RST also on GPIO 22** (shared with LED, matches SimpleMFRC522 standard)
-3. **All other MFRC522 pins use standard SPI mapping**
+1. **LED on GPIO 22** (status indicator)
+2. **MFRC522 RST on GPIO 25** (separate from LED)
+3. **MFRC522 SDA on GPIO 8** (SPI CE0)
+4. **All other MFRC522 pins use standard SPI mapping**
 
 ### Wiring Diagram
 
@@ -48,12 +49,12 @@ MISO  -->  GPIO9 (Pin 21)
 MOSI  -->  GPIO10 (Pin 19)
 SCK   -->  GPIO11 (Pin 23)
 SDA   -->  GPIO8 (Pin 24) [CE0]
-RST   -->  GPIO22 (Pin 15) [Shared with LED]
+RST   -->  GPIO25 (Pin 22)
 IRQ   -->  Not connected
 ```
 
 **Important Note:**
-GPIO 22 is shared between the LED and MFRC522 RST pin, exactly matching the reference Python implementation. This works because the RST pin is only used during MFRC522 initialization, while the LED is used for status indication during operation.
+GPIO 22 is used for the LED (status indicator), while GPIO 25 is used for the MFRC522 RST pin. These are separate pins, not shared.
 
 ### Enable SPI
 
@@ -111,8 +112,8 @@ impl Mfrc522RfidReader {
         spi.configure(&options)
             .context("Failed to configure SPI")?;
 
-        // Setup chip select pin (GPIO22)
-        let pin = SysfsPin::new(22);
+        // Setup reset pin (GPIO25)
+        let pin = SysfsPin::new(25);
         pin.export().context("Failed to export RFID CS pin")?;
 
         // Wait for pin to be exported
@@ -181,23 +182,15 @@ impl RfidReader for Mfrc522RfidReader {
 
 ### Step 4: Configuration
 
-Add your RFID card IDs to the playlist mapping in `TurnyConfig`:
+Add your RFID card IDs to the playlist mapping in `config.toml` or via the web UI:
 
-```rust
-impl Default for TurnyConfig {
-    fn default() -> Self {
-        let mut playlist_map = HashMap::new();
-
-        // Add your card IDs here (get them from the logs when cards are detected)
-        playlist_map.insert(
-            "your_card_id_here".to_string(),
-            "spotify:playlist:your_playlist_id".to_string(),
-        );
-
-        // ... rest of implementation
-    }
-}
+```toml
+[playlists]
+# Add your card IDs here (get them from the logs when cards are detected)
+"your_card_id_here" = "spotify:playlist:your_playlist_id"
 ```
+
+Card mappings are stored in the SQLite database (`turny.db`) and can be managed via the web UI or CLI (`turny cards add/remove`).
 
 ## Troubleshooting
 
@@ -219,7 +212,7 @@ impl Default for TurnyConfig {
    - Double-check all connections
    - Ensure 3.3V power (NOT 5V)
    - Use a multimeter to verify connections
-   - Verify RST is connected to GPIO 22 (same as LED)
+    - Verify RST is connected to GPIO 25 (separate from LED on GPIO 22)
 
 4. **Card Not Detected**
    - Try different RFID cards/tags
