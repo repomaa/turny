@@ -67,6 +67,9 @@
               src = craneLib.cleanCargoSource ./.;
               strictDeps = true;
 
+              # Build in debug mode (matches previous buildType = "debug")
+              CARGO_PROFILE = "";
+
               nativeBuildInputs = with pkgs; [
                 pkg-config
                 cmake
@@ -166,9 +169,6 @@
               commonArgs
               // {
                 inherit cargoArtifacts;
-
-                # Build in debug mode (matches previous buildType = "debug")
-                CARGO_PROFILE = "";
 
                 preConfigure = ''
                   mkdir -p frontend/build
