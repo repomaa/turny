@@ -73,6 +73,7 @@ impl SpotifyConnect {
         let player_config = PlayerConfig {
             bitrate: Bitrate::Bitrate160,
             gapless: true,
+            normalisation: true,
             ..Default::default()
         };
 
