@@ -2,14 +2,16 @@
   description = "Turny Spotify RFID Controller Development Environment";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     flake-parts.url = "github:hercules-ci/flake-parts";
+    crane.url = "github:ipetkov/crane";
   };
 
   outputs =
     {
       nixpkgs,
       flake-parts,
+      crane,
       ...
     }@inputs:
     flake-parts.lib.mkFlake { inherit inputs; } (
@@ -53,7 +55,35 @@
             };
           };
         perSystem =
-          { pkgs, config, ... }:
+          {
+            pkgs,
+            config,
+            ...
+          }:
+          let
+            craneLib = crane.mkLib pkgs;
+
+            commonArgs = {
+              src = craneLib.cleanCargoSource ./.;
+              strictDeps = true;
+
+              nativeBuildInputs = with pkgs; [
+                pkg-config
+                cmake
+                rustPlatform.bindgenHook
+              ];
+
+              buildInputs = with pkgs; [
+                alsa-lib
+                alsa-lib.dev
+                openssl
+                openssl.dev
+                udev
+              ];
+            };
+
+            cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+          in
           {
             devShells.default = pkgs.mkShell {
               buildInputs = with pkgs; [
@@ -132,44 +162,28 @@
               '';
             };
 
-            packages.default = pkgs.rustPlatform.buildRustPackage {
-              pname = "turny";
-              version = "0.1.0";
+            packages.default = craneLib.buildPackage (
+              commonArgs
+              // {
+                inherit cargoArtifacts;
 
-              src = ./.;
-              cargoLock = {
-                lockFile = ./Cargo.lock;
-              };
+                # Build in debug mode (matches previous buildType = "debug")
+                CARGO_PROFILE = "";
 
-              nativeBuildInputs = with pkgs; [
-                pkg-config
-                cmake
-                rustPlatform.bindgenHook
-              ];
+                preConfigure = ''
+                  mkdir -p frontend/build
+                  cp -r ${config.packages.frontend}/* frontend/build/
+                '';
 
-              buildInputs = with pkgs; [
-                alsa-lib
-                alsa-lib.dev
-                openssl
-                openssl.dev
-                udev
-              ];
-
-              buildType = "debug";
-
-              preConfigure = ''
-                mkdir -p frontend/build
-                cp -r ${config.packages.frontend}/* frontend/build/
-              '';
-
-              meta = with pkgs.lib; {
-                description = "Turny Spotify RFID Controller (native build)";
-                homepage = "https://github.com/user/turny";
-                license = licenses.mit;
-                maintainers = [ ];
-                platforms = platforms.linux;
-              };
-            };
+                meta = with pkgs.lib; {
+                  description = "Turny Spotify RFID Controller (native build)";
+                  homepage = "https://github.com/user/turny";
+                  license = licenses.mit;
+                  maintainers = [ ];
+                  platforms = platforms.linux;
+                };
+              }
+            );
           };
       }
     );
