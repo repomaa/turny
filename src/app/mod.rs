@@ -12,6 +12,7 @@ use crate::hardware::{ButtonEvent, HardwareManager};
 use crate::spotify_connect::{pct_to_librespot_volume, SpotifyConnect};
 use crate::state::StateManager;
 use crate::web::{Db, PlayerCommand, WebEvent};
+use crate::web::spotify_api::SpotifyApi;
 
 /// Main application struct that coordinates all components
 pub struct TurnyApp {
@@ -19,10 +20,14 @@ pub struct TurnyApp {
     state_manager: StateManager,
     hardware: HardwareManager,
     spotify_connect: SpotifyConnect,
+    spotify_api: SpotifyApi,
     auth_manager: Arc<AuthManager>,
     db: Option<Arc<Db>>,
     event_tx: Option<broadcast::Sender<WebEvent>>,
     player_cmd_rx: Option<mpsc::Receiver<PlayerCommand>>,
+    /// Set when a long-press restart-track action has already been triggered
+    /// (so the subsequent `Released` event doesn't fire another action).
+    restart_track_triggered: bool,
 }
 
 impl TurnyApp {
@@ -54,6 +59,7 @@ impl TurnyApp {
 
         // Initialize Spotify Connect
         let spotify_connect = SpotifyConnect::new("Turny Speaker".to_string());
+        let spotify_api = SpotifyApi::new();
 
         // Initialize authentication manager
         let auth_manager = Arc::new(AuthManager::new(
@@ -71,10 +77,12 @@ impl TurnyApp {
             state_manager,
             hardware,
             spotify_connect,
+            spotify_api,
             auth_manager,
             db,
             event_tx,
             player_cmd_rx,
+            restart_track_triggered: false,
         })
     }
 
@@ -181,6 +189,20 @@ impl TurnyApp {
                 self.handle_button_event(button_event).await?;
             }
 
+            // Check for long-press restart-track (fires while button is still held,
+            // without waiting for release).
+            if !self.restart_track_triggered {
+                if let Some(hold) = self.hardware.button_hold_duration() {
+                    if hold >= self.config.settings.restart_track_threshold
+                        && hold < self.config.settings.manual_reset_threshold
+                        && self.spotify_connect.is_initialized()
+                    {
+                        self.restart_track_triggered = true;
+                        self.restart_current_playlist().await?;
+                    }
+                }
+            }
+
             // Check for web player commands
             let pending_cmds: Vec<PlayerCommand> = if let Some(rx) = self.player_cmd_rx.as_mut() {
                 let mut cmds = Vec::new();
@@ -220,6 +242,7 @@ impl TurnyApp {
                 .map(|m| crate::web::events::ExistingMapping {
                     playlist_uri: m.playlist_uri,
                     playlist_name: m.playlist_name,
+                    is_audiobook: m.is_audiobook,
                 })
         } else {
             None
@@ -242,22 +265,54 @@ impl TurnyApp {
         })?;
 
         if current_card.as_ref() != Some(&card_id) {
-            // Look up playlist: DB first, then config fallback
-            let playlist_uri = if let Some(db) = &self.db {
-                db.get_playlist_for_card(&card_id).await?
+            // Look up full mapping: DB first, then config fallback
+            let (playlist_uri, is_audiobook) = if let Some(db) = &self.db {
+                match db.get_mapping_for_card(&card_id).await? {
+                    Some(m) => (Some(m.playlist_uri), m.is_audiobook),
+                    None => (None, false),
+                }
             } else {
-                self.config.get_playlist_for_card(&card_id).cloned()
+                (
+                    self.config.get_playlist_for_card(&card_id).cloned(),
+                    false,
+                )
             };
 
             if let Some(playlist_uri) = playlist_uri {
-                info!("Starting playback for card {} with playlist {}", card_id, playlist_uri);
+                info!(
+                    "Starting playback for card {} with playlist {}{}",
+                    card_id, playlist_uri, if is_audiobook { " [audiobook]" } else { "" }
+                );
+
+                // For audiobook cards, try to resume from saved position
+                let (seek_to, playing_track) = if is_audiobook {
+                    if let Some(db) = &self.db {
+                        if let Some(progress) = db.get_audiobook_progress(&card_id).await.ok().flatten() {
+                            info!(
+                                "Resuming audiobook for card {} at track {} position {}ms",
+                                card_id, progress.track_uri, progress.position_ms
+                            );
+                            (progress.position_ms, Some(progress.track_uri))
+                        } else {
+                            (0, None)
+                        }
+                    } else {
+                        (0, None)
+                    }
+                } else {
+                    (0, None)
+                };
 
                 // Start playback — only update state/LED on success so that
                 // a failed attempt (e.g. Spirc not yet ready) will be retried
                 // on the next poll instead of being silently swallowed.
-                match self.start_playback(&playlist_uri).await {
+                match self.start_playback_with_options(&playlist_uri, !is_audiobook, seek_to, playing_track).await {
                     Ok(()) => {
-                        self.state_manager.set_current_card(card_id.clone(), playlist_uri.clone());
+                        self.state_manager.set_current_card_with_audiobook(
+                            card_id.clone(),
+                            playlist_uri.clone(),
+                            is_audiobook,
+                        );
                         self.state_manager.set_playing(true);
                         self.hardware.led_on()?;
 
@@ -291,10 +346,22 @@ impl TurnyApp {
         // (play → pause → play → pause), we require the absence count to
         // reach the threshold *and* not reset immediately on the next read.
         if self.state_manager.should_auto_pause(self.config.settings.absence_threshold as u32) {
-            let is_playing = self.state_manager.with_state(|state| state.is_playing)?;
+            let (is_playing, current_id, is_audiobook) = self.state_manager.with_state(|state| {
+                (state.is_playing, state.current_id.clone(), state.is_audiobook)
+            })?;
 
             if is_playing {
                 info!("Auto-pausing due to card absence");
+
+                // For audiobook cards, save current playback position before pausing
+                if is_audiobook {
+                    if let Some(ref card_id) = current_id {
+                        if let Err(e) = self.save_audiobook_progress(card_id).await {
+                            warn!("Failed to save audiobook progress: {}", e);
+                        }
+                    }
+                }
+
                 if let Err(e) = self.pause_playback().await {
                     warn!("Failed to auto-pause: {}", e);
                 }
@@ -321,9 +388,15 @@ impl TurnyApp {
         match event {
             ButtonEvent::Pressed => {
                 debug!("Button pressed");
+                self.restart_track_triggered = false;
             }
             ButtonEvent::Released(duration) => {
                 debug!("Button released after {:?}", duration);
+                if self.restart_track_triggered {
+                    // The long-press action already fired; swallow this release.
+                    debug!("Swallowing button release (restart-track already triggered)");
+                    return Ok(());
+                }
                 self.handle_button_release(duration).await?;
             }
         }
@@ -427,6 +500,7 @@ impl TurnyApp {
         Ok(())
     }
 
+
     /// Restart Spotify Connect service
     async fn restart_spotify_connect(&mut self) -> Result<()> {
         info!("Restarting Spotify Connect...");
@@ -443,21 +517,108 @@ impl TurnyApp {
         Ok(())
     }
 
-    /// Start playback with given playlist
+    /// Start playback with given playlist (repeat on, start from beginning)
+    #[allow(dead_code)]
     async fn start_playback(&mut self, playlist_uri: &str) -> Result<()> {
-        info!("Starting playback with playlist: {}", playlist_uri);
+        self.start_playback_with_options(playlist_uri, true, 0, None).await
+    }
+
+    /// Start playback with fine-grained options.
+    async fn start_playback_with_options(
+        &mut self,
+        playlist_uri: &str,
+        repeat: bool,
+        seek_to: u32,
+        playing_track: Option<String>,
+    ) -> Result<()> {
+        info!(
+            "Starting playback with playlist: {}{}",
+            playlist_uri,
+            if !repeat { " [no repeat]" } else { "" }
+        );
 
         // Token is ensured by the caller (initialize_spotify or main loop reinit)
 
         // Start playback using Spirc — wrap in timeout as Spirc/load can hang
         // after a 429 rate-limit or network issue
-        timeout(Duration::from_secs(15), self.spotify_connect.load_track(playlist_uri))
+        timeout(
+            Duration::from_secs(15),
+            self.spotify_connect.load_track_with_options(playlist_uri, repeat, seek_to, playing_track),
+        )
             .await
             .map_err(|_| {
                 anyhow::anyhow!("Playback load timed out after 15s for {}", playlist_uri)
             })??;
 
         info!("Playback started successfully");
+        Ok(())
+    }
+
+    /// Restart the current playlist from the first track.
+    async fn restart_current_playlist(&mut self) -> Result<()> {
+        let context_uri = self.state_manager.with_state(|s| s.context_uri.clone())?;
+        let Some(ref playlist_uri) = context_uri else {
+            warn!("Restart track requested but no playlist is loaded");
+            return Ok(());
+        };
+
+        info!("Restarting playlist from first track: {}", playlist_uri);
+
+        // For audiobooks, clear saved progress so resume doesn't jump back
+        let current_id = self.state_manager.with_state(|s| s.current_id.clone())?;
+        let is_audiobook = self.state_manager.with_state(|s| s.is_audiobook)?;
+        if is_audiobook {
+            if let Some(ref card_id) = current_id {
+                if let Some(db) = &self.db {
+                    if let Err(e) = db.clear_audiobook_progress(card_id).await {
+                        warn!("Failed to clear audiobook progress: {}", e);
+                    }
+                }
+            }
+        }
+
+        match timeout(
+            Duration::from_secs(15),
+            self.spotify_connect.restart_playlist(playlist_uri),
+        )
+            .await
+        {
+            Ok(Ok(())) => {
+                info!("Playlist restarted from first track");
+                self.state_manager.set_playing(true);
+            }
+            Ok(Err(e)) => warn!("Failed to restart playlist: {}", e),
+            Err(_) => warn!("Restart playlist timed out after 15s"),
+        }
+        Ok(())
+    }
+
+    /// Save the current audiobook playback position to the database.
+    /// Queries the Spotify Web API for the currently-playing track and progress.
+    async fn save_audiobook_progress(&self, card_id: &str) -> Result<()> {
+        let token_info = self.auth_manager.ensure_valid_token().await
+            .context("No valid token to fetch currently playing")?;
+
+        let playing = self.spotify_api
+            .get_currently_playing(&token_info.access_token)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to fetch currently playing: {}", e))?;
+
+        if let Some(np) = playing {
+            if let Some(ref track_uri) = np.track_uri {
+                if let Some(db) = &self.db {
+                    db.save_audiobook_progress(card_id, track_uri, np.progress_ms).await?;
+                    info!(
+                        "Saved audiobook progress for card {}: track={}, position={}ms",
+                        card_id, track_uri, np.progress_ms
+                    );
+                }
+            } else {
+                warn!("Cannot save audiobook progress: track_uri missing from currently-playing response");
+            }
+        } else {
+            debug!("No track currently playing, skipping audiobook progress save");
+        }
         Ok(())
     }
 

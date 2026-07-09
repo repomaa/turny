@@ -6,7 +6,7 @@ use librespot::core::{
     spotify_uri::SpotifyUri,
 };
 use librespot::connect::{
-    LoadContextOptions, LoadRequest, LoadRequestOptions, Options,
+    LoadContextOptions, LoadRequest, LoadRequestOptions, Options, PlayingTrack,
     ConnectConfig, Spirc,
 };
 use librespot::discovery::DeviceType;
@@ -180,7 +180,26 @@ impl SpotifyConnect {
     }
 
     /// Loads and starts playing a playlist identified by its Spotify URI.
+    /// Uses repeat mode (loops the playlist).
+    #[allow(dead_code)]
     pub async fn load_track(&self, playlist_uri: &str) -> Result<()> {
+        self.load_track_with_options(playlist_uri, true, 0, None).await
+    }
+
+    /// Loads and starts playing a playlist with fine-grained control.
+    ///
+    /// # Arguments
+    /// * `playlist_uri` - Spotify playlist URI
+    /// * `repeat` - Whether to repeat the playlist
+    /// * `seek_to` - Position in milliseconds to seek to within the starting track
+    /// * `playing_track` - Optional track to start at (by URI)
+    pub async fn load_track_with_options(
+        &self,
+        playlist_uri: &str,
+        repeat: bool,
+        seek_to: u32,
+        playing_track: Option<String>,
+    ) -> Result<()> {
         let spirc = self
             .spirc
             .as_ref()
@@ -208,19 +227,31 @@ impl SpotifyConnect {
             playlist_uri.to_string(),
             LoadRequestOptions {
                 start_playing: true,
+                seek_to,
                 context_options: Some(LoadContextOptions::Options(Options {
-                    repeat: true,
+                    repeat,
                     ..Default::default()
                 })),
-                ..Default::default()
+                playing_track: playing_track.map(PlayingTrack::Uri),
             },
         );
 
         spirc.activate().context("Failed to activate Spirc")?;
         spirc.load(request).context("Failed to load playlist via Spirc")?;
 
-        info!("Loaded playlist via Spirc: {} ({} tracks)", playlist_uri, track_count);
+        info!(
+            "Loaded playlist via Spirc: {} ({} tracks){}",
+            playlist_uri,
+            track_count,
+            if !repeat { " [no repeat]" } else { "" }
+        );
         Ok(())
+    }
+
+    /// Reloads the current playlist from the first track.
+    /// Used for the "return to first track" button action.
+    pub async fn restart_playlist(&self, playlist_uri: &str) -> Result<()> {
+        self.load_track_with_options(playlist_uri, true, 0, None).await
     }
 
     /// Sends a play command to the active Spirc session.

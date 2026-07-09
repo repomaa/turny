@@ -21,6 +21,7 @@ pub struct CurrentlyPlaying {
     pub is_playing: bool,
     pub progress_ms: u32,
     pub duration_ms: u32,
+    pub track_uri: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -82,6 +83,7 @@ struct CurrentlyPlayingResponse {
 struct CurrentlyPlayingItem {
     name: String,
     duration_ms: u64,
+    uri: Option<String>,
     artists: Vec<CurrentlyPlayingArtist>,
     album: CurrentlyPlayingAlbum,
 }
@@ -206,6 +208,7 @@ impl SpotifyApi {
                     is_playing: parsed.is_playing,
                     progress_ms: parsed.progress_ms as u32,
                     duration_ms: item.duration_ms as u32,
+                    track_uri: item.uri,
                 }))
             }
             None => Ok(None),

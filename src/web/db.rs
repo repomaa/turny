@@ -1,16 +1,24 @@
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 const SETTING_KEY_TOKEN: &str = "spotify_token";
 const SETTING_KEY_VOLUME: &str = "volume";
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CardMapping {
     pub card_id: String,
     pub playlist_uri: String,
     pub playlist_name: Option<String>,
+    #[serde(default)]
+    pub is_audiobook: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudiobookProgress {
+    pub track_uri: String,
+    pub position_ms: u32,
 }
 
 pub struct Db {
@@ -42,16 +50,41 @@ impl Db {
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS audiobook_progress (
+                card_id TEXT PRIMARY KEY,
+                track_uri TEXT NOT NULL,
+                position_ms INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
             );",
         )
         .context("Failed to create database tables")?;
 
-        // Schema version tracking. Currently at version 0 (initial schema).
-        // When adding migrations, increment this and add migration logic here:
-        //   let current = conn.pragma_query_value(...);
-        //   if current < 1 { apply_v1_migration(); conn.pragma_update(None, "user_version", 1u32)?; }
-        conn.pragma_update(None, "user_version", 0u32)
-            .context("Failed to set schema version")?;
+        // Schema version tracking and migrations.
+        let current_version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap_or(0);
+
+        if current_version < 1 {
+            // v0 → v1: add is_audiobook column to card_mappings
+            // ALTER TABLE ADD COLUMN is idempotent-safe here because we only
+            // run it when user_version < 1, i.e. on databases created before
+            // this column existed.
+            let has_column: bool = conn
+                .prepare("PRAGMA table_info(card_mappings)")?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .any(|name| name == "is_audiobook");
+            if !has_column {
+                conn.execute(
+                    "ALTER TABLE card_mappings ADD COLUMN is_audiobook INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )
+                .context("Failed to add is_audiobook column")?;
+            }
+            conn.pragma_update(None, "user_version", 1u32)
+                .context("Failed to set schema version to 1")?;
+        }
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -67,11 +100,12 @@ impl Db {
         card_id: &str,
         playlist_uri: &str,
         playlist_name: Option<&str>,
+        is_audiobook: bool,
     ) -> Result<()> {
         let conn = self.lock().await;
         conn.execute(
-            "INSERT OR REPLACE INTO card_mappings (card_id, playlist_uri, playlist_name) VALUES (?1, ?2, ?3)",
-            rusqlite::params![card_id, playlist_uri, playlist_name],
+            "INSERT OR REPLACE INTO card_mappings (card_id, playlist_uri, playlist_name, is_audiobook) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![card_id, playlist_uri, playlist_name, is_audiobook as i32],
         )
         .context("Failed to add card mapping")?;
         Ok(())
@@ -87,6 +121,7 @@ impl Db {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn get_playlist_for_card(&self, card_id: &str) -> Result<Option<String>> {
         let conn = self.lock().await;
         let mut stmt = conn
@@ -101,7 +136,7 @@ impl Db {
     pub async fn get_mapping_for_card(&self, card_id: &str) -> Result<Option<CardMapping>> {
         let conn = self.lock().await;
         let mut stmt = conn
-            .prepare_cached("SELECT card_id, playlist_uri, playlist_name FROM card_mappings WHERE card_id = ?1")
+            .prepare_cached("SELECT card_id, playlist_uri, playlist_name, is_audiobook FROM card_mappings WHERE card_id = ?1")
             .context("Failed to prepare query")?;
         let result = stmt
             .query_row(rusqlite::params![card_id], |row| {
@@ -109,6 +144,7 @@ impl Db {
                     card_id: row.get(0)?,
                     playlist_uri: row.get(1)?,
                     playlist_name: row.get(2)?,
+                    is_audiobook: row.get::<_, i32>(3)? != 0,
                 })
             })
             .optional()?;
@@ -135,7 +171,7 @@ impl Db {
     pub async fn get_all_mappings(&self) -> Result<Vec<CardMapping>> {
         let conn = self.lock().await;
         let mut stmt = conn
-            .prepare_cached("SELECT card_id, playlist_uri, playlist_name FROM card_mappings")
+            .prepare_cached("SELECT card_id, playlist_uri, playlist_name, is_audiobook FROM card_mappings")
             .context("Failed to prepare query")?;
         let mappings = stmt
             .query_map([], |row| {
@@ -143,6 +179,7 @@ impl Db {
                     card_id: row.get(0)?,
                     playlist_uri: row.get(1)?,
                     playlist_name: row.get(2)?,
+                    is_audiobook: row.get::<_, i32>(3)? != 0,
                 })
             })
             .context("Failed to query mappings")?
@@ -186,6 +223,51 @@ impl Db {
             .context("Failed to migrate card mapping")?;
         }
         tx.commit()?;
+        Ok(())
+    }
+
+    pub async fn save_audiobook_progress(
+        &self,
+        card_id: &str,
+        track_uri: &str,
+        position_ms: u32,
+    ) -> Result<()> {
+        let conn = self.lock().await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        conn.execute(
+            "INSERT OR REPLACE INTO audiobook_progress (card_id, track_uri, position_ms, updated_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![card_id, track_uri, position_ms, now],
+        )
+        .context("Failed to save audiobook progress")?;
+        Ok(())
+    }
+
+    pub async fn get_audiobook_progress(&self, card_id: &str) -> Result<Option<AudiobookProgress>> {
+        let conn = self.lock().await;
+        let mut stmt = conn
+            .prepare_cached("SELECT track_uri, position_ms FROM audiobook_progress WHERE card_id = ?1")
+            .context("Failed to prepare query")?;
+        let result = stmt
+            .query_row(rusqlite::params![card_id], |row| {
+                Ok(AudiobookProgress {
+                    track_uri: row.get(0)?,
+                    position_ms: row.get::<_, i64>(1)? as u32,
+                })
+            })
+            .optional()?;
+        Ok(result)
+    }
+
+    pub async fn clear_audiobook_progress(&self, card_id: &str) -> Result<()> {
+        let conn = self.lock().await;
+        conn.execute(
+            "DELETE FROM audiobook_progress WHERE card_id = ?1",
+            rusqlite::params![card_id],
+        )
+        .context("Failed to clear audiobook progress")?;
         Ok(())
     }
 

@@ -213,6 +213,11 @@ impl HardwareManager {
         self.button.check_event()
     }
 
+    /// Returns how long the button has been held, if currently pressed.
+    pub fn button_hold_duration(&self) -> Option<Duration> {
+        self.button.hold_duration()
+    }
+
     /// Turn LED on
     pub fn led_on(&mut self) -> Result<()> {
         self.led.turn_on()
@@ -262,6 +267,10 @@ mod tests {
             } else {
                 None
             }
+        }
+
+        fn hold_duration(&self) -> Option<Duration> {
+            None
         }
     }
 

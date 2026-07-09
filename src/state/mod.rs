@@ -13,6 +13,8 @@ pub struct TurnyState {
     pub is_playing: bool,
     /// Count of consecutive card absences (for auto-pause)
     pub absence_count: u32,
+    /// Whether the current card is an audiobook (affects repeat & resume behavior)
+    pub is_audiobook: bool,
 }
 
 impl Default for TurnyState {
@@ -22,6 +24,7 @@ impl Default for TurnyState {
             context_uri: None,
             is_playing: false,
             absence_count: 0,
+            is_audiobook: false,
         }
     }
 }
@@ -39,10 +42,19 @@ impl TurnyState {
 
     /// Set the current card and context. Also resets absence_count to 0
     /// since the card is now present.
+    #[allow(dead_code)]
     pub fn set_current_card(&mut self, card_id: String, context_uri: String) {
         self.current_id = Some(card_id);
         self.context_uri = Some(context_uri);
         self.absence_count = 0;
+    }
+
+    /// Set the current card, context, and audiobook flag.
+    pub fn set_current_card_with_audiobook(&mut self, card_id: String, context_uri: String, is_audiobook: bool) {
+        self.current_id = Some(card_id);
+        self.context_uri = Some(context_uri);
+        self.absence_count = 0;
+        self.is_audiobook = is_audiobook;
     }
 
     /// Set the playback state
@@ -121,9 +133,19 @@ impl StateManager {
     }
 
     /// Set the current card and context
+    #[allow(dead_code)]
     pub fn set_current_card(&self, card_id: String, context_uri: String) {
         if let Err(e) = self.with_state_mut(|state| state.set_current_card(card_id, context_uri)) {
             error!("StateManager lock failed in set_current_card: {}", e);
+        }
+    }
+
+    /// Set the current card, context, and audiobook flag
+    pub fn set_current_card_with_audiobook(&self, card_id: String, context_uri: String, is_audiobook: bool) {
+        if let Err(e) = self.with_state_mut(|state| {
+            state.set_current_card_with_audiobook(card_id, context_uri, is_audiobook)
+        }) {
+            error!("StateManager lock failed in set_current_card_with_audiobook: {}", e);
         }
     }
 

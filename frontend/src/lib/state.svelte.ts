@@ -16,6 +16,7 @@ class TurnyState {
 	error = $state<string | null>(null);
 	volume = $state<number | null>(null);
 	volumeSending = $state(false);
+	isAudiobook = $state(false);
 }
 
 export const turnyState = new TurnyState();

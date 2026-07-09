@@ -13,6 +13,9 @@ pub enum ButtonEvent {
 /// Trait for reading button events
 pub trait ButtonReader {
     fn check_event(&mut self) -> Option<ButtonEvent>;
+    /// Returns the duration the button has been held, if currently pressed.
+    /// Returns `None` if the button is not pressed.
+    fn hold_duration(&self) -> Option<Duration>;
 }
 
 /// Trait for controlling LEDs
@@ -81,6 +84,10 @@ impl ButtonReader for GpioButtonReader {
             debug!("Button event detected: {:?}", result);
         }
         result
+    }
+
+    fn hold_duration(&self) -> Option<Duration> {
+        self.press_start.map(|start| start.elapsed())
     }
 }
 

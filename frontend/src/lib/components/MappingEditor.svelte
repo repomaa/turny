@@ -8,6 +8,7 @@
 		existingMapping,
 		editMode = $bindable(false),
 		selectedPlaylistUri = $bindable(''),
+		isAudiobook = $bindable(false),
 		playlists,
 		saving,
 		onsave,
@@ -19,6 +20,7 @@
 		existingMapping: ExistingMapping | null;
 		editMode: boolean;
 		selectedPlaylistUri: string;
+		isAudiobook: boolean;
 		playlists: Playlist[];
 		saving: boolean;
 		onsave: () => void;
@@ -50,6 +52,15 @@
 			</select>
 		</div>
 
+		<label class="mb-3 flex items-center gap-2 text-sm text-gray-400">
+			<input
+				type="checkbox"
+				class="h-4 w-4 rounded accent-green-500"
+				bind:checked={isAudiobook}
+			/>
+			Mark as audiobook (no repeat, resume from last position)
+		</label>
+
 		<button
 			class="rounded-lg bg-green-500 px-4 py-2 font-semibold text-white hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed"
 			onclick={onsave}
@@ -68,6 +79,9 @@
 				</svg>
 				<p class="text-sm text-gray-300">
 					Currently mapped to: <span class="font-semibold text-white">{existingMapping.playlist_name ?? playlistDisplayName(existingMapping.playlist_uri, playlists)}</span>
+					{#if existingMapping.is_audiobook}
+						<span class="ml-1 rounded bg-purple-600/30 px-1.5 py-0.5 text-xs text-purple-300">Audiobook</span>
+					{/if}
 				</p>
 			</div>
 		</div>
@@ -86,6 +100,15 @@
 					{/each}
 				</select>
 			</div>
+
+			<label class="mb-3 flex items-center gap-2 text-sm text-gray-400">
+				<input
+					type="checkbox"
+					class="h-4 w-4 rounded accent-green-500"
+					bind:checked={isAudiobook}
+				/>
+				Mark as audiobook (no repeat, resume from last position)
+			</label>
 
 			<div class="flex gap-2">
 				<button

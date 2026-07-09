@@ -33,11 +33,11 @@ export function getCards(): Promise<Card[]> {
 	return request<Card[]>('/api/cards');
 }
 
-export function saveCard(card_id: string, playlist_uri: string, playlist_name?: string): Promise<void> {
+export function saveCard(card_id: string, playlist_uri: string, playlist_name?: string, is_audiobook?: boolean): Promise<void> {
 	return request('/api/cards', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ card_id, playlist_uri, playlist_name })
+		body: JSON.stringify({ card_id, playlist_uri, playlist_name, is_audiobook: is_audiobook ?? false })
 	}).then(() => undefined);
 }
 

@@ -140,7 +140,7 @@ pub async fn handle_config_command(args: &[String]) -> Result<()> {
             let playlist_uri = args[2].clone();
 
             let db = Db::open("turny.db")?;
-            db.add_card_mapping(&card_id, &playlist_uri, None).await?;
+            db.add_card_mapping(&card_id, &playlist_uri, None, false).await?;
 
             config.add_card_mapping(card_id.clone(), playlist_uri.clone());
             config.save_to_file("config.toml").await?;
@@ -206,7 +206,7 @@ pub async fn handle_cards_command(args: &[String]) -> Result<()> {
             let playlist_uri = args[2].clone();
 
             let db = Db::open("turny.db")?;
-            db.add_card_mapping(&card_id, &playlist_uri, None).await?;
+            db.add_card_mapping(&card_id, &playlist_uri, None, false).await?;
 
             let mut config = load_config().await?;
             config.add_card_mapping(card_id.clone(), playlist_uri.clone());

@@ -4,6 +4,8 @@ use serde::Serialize;
 pub struct ExistingMapping {
     pub playlist_uri: String,
     pub playlist_name: Option<String>,
+    #[serde(default)]
+    pub is_audiobook: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

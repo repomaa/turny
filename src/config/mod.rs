@@ -34,6 +34,7 @@ pub struct SettingsConfig {
     pub absence_threshold: u8,
     pub manual_reset_threshold: Duration,
     pub previous_track_threshold: Duration,
+    pub restart_track_threshold: Duration,
 }
 
 /// Audio configuration section
@@ -231,8 +232,9 @@ impl Default for SettingsConfig {
             poll_interval: 50,
             default_volume: 70,
             absence_threshold: 30,
-            manual_reset_threshold: Duration::from_secs(5),
+            manual_reset_threshold: Duration::from_secs(8),
             previous_track_threshold: Duration::from_secs(1),
+            restart_track_threshold: Duration::from_secs(4),
         }
     }
 }

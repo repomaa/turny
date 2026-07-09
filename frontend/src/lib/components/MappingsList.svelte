@@ -22,7 +22,12 @@
 			{#each cards as card}
 				<li class="flex items-center justify-between px-4 py-3">
 					<div class="min-w-0">
-						<p class="font-mono text-sm text-gray-300">{card.card_id}</p>
+						<div class="flex items-center gap-2">
+							<p class="font-mono text-sm text-gray-300">{card.card_id}</p>
+							{#if card.is_audiobook}
+								<span class="rounded bg-purple-600/30 px-1.5 py-0.5 text-xs text-purple-300">Audiobook</span>
+							{/if}
+						</div>
 						<p class="truncate text-sm text-gray-500">{card.playlist_name ?? playlistDisplayName(card.playlist_uri, playlists)}</p>
 					</div>
 					<div class="flex items-center gap-2">

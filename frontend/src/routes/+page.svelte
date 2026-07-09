@@ -66,6 +66,7 @@
 			state.existingMapping = null;
 			state.editMode = false;
 			state.cardJustDetected = false;
+			state.isAudiobook = false;
 		} catch {
 			showError('Failed to logout');
 		}
@@ -124,14 +125,16 @@
 		state.saving = true;
 		try {
 			const pl = state.playlists.find((p) => p.uri === state.selectedPlaylistUri);
-			await saveCard(state.lastCardId, state.selectedPlaylistUri, pl?.name);
+			await saveCard(state.lastCardId, state.selectedPlaylistUri, pl?.name, state.isAudiobook);
 			await loadCards();
 			state.existingMapping = {
 				playlist_uri: state.selectedPlaylistUri,
-				playlist_name: pl?.name ?? null
+				playlist_name: pl?.name ?? null,
+				is_audiobook: state.isAudiobook
 			};
 			state.editMode = false;
 			state.selectedPlaylistUri = '';
+			state.isAudiobook = false;
 		} catch {
 			showError('Failed to save card mapping');
 		} finally {
@@ -142,11 +145,13 @@
 	function startEdit() {
 		state.editMode = true;
 		state.selectedPlaylistUri = state.existingMapping?.playlist_uri ?? '';
+		state.isAudiobook = state.existingMapping?.is_audiobook ?? false;
 	}
 
 	function cancelEdit() {
 		state.editMode = false;
 		state.selectedPlaylistUri = '';
+		state.isAudiobook = false;
 	}
 
 	async function handleDelete(id: string) {
@@ -174,8 +179,10 @@
 		state.lastCardId = card.card_id;
 		state.existingMapping = {
 			playlist_uri: card.playlist_uri,
-			playlist_name: card.playlist_name
+			playlist_name: card.playlist_name,
+			is_audiobook: card.is_audiobook
 		};
+		state.isAudiobook = card.is_audiobook;
 		state.cardJustDetected = true;
 		state.editMode = false;
 		state.selectedPlaylistUri = '';
@@ -183,15 +190,16 @@
 
 	function handleWsEvent(ev: WsEvent) {
 		switch (ev.type) {
-			case 'RfidDetected':
-				if (state.lastCardId !== ev.card_id) {
-					state.lastCardId = ev.card_id;
-					state.existingMapping = ev.existing_mapping;
-					state.cardJustDetected = true;
-					state.editMode = false;
-					state.selectedPlaylistUri = '';
-				}
-				break;
+		case 'RfidDetected':
+			if (state.lastCardId !== ev.card_id) {
+				state.lastCardId = ev.card_id;
+				state.existingMapping = ev.existing_mapping;
+				state.isAudiobook = ev.existing_mapping?.is_audiobook ?? false;
+				state.cardJustDetected = true;
+				state.editMode = false;
+				state.selectedPlaylistUri = '';
+			}
+			break;
 			case 'PlaybackStarted':
 			case 'PlaybackResumed':
 				if (state.nowPlaying) state.nowPlaying = { ...state.nowPlaying, is_playing: true };
@@ -308,18 +316,19 @@
 
 			<section class="mb-6 rounded-lg bg-gray-800 p-6">
 				<h2 class="mb-4 text-lg font-semibold text-gray-300">RFID Card Mapping</h2>
-				<MappingEditor
-					lastCardId={state.lastCardId}
-					cardJustDetected={state.cardJustDetected}
-					existingMapping={state.existingMapping}
-					bind:editMode={state.editMode}
-					bind:selectedPlaylistUri={state.selectedPlaylistUri}
-					playlists={state.playlists}
-					saving={state.saving}
-					onsave={handleSave}
-					oncancel={cancelEdit}
-					onstartedit={startEdit}
-				/>
+			<MappingEditor
+				lastCardId={state.lastCardId}
+				cardJustDetected={state.cardJustDetected}
+				existingMapping={state.existingMapping}
+				bind:editMode={state.editMode}
+				bind:selectedPlaylistUri={state.selectedPlaylistUri}
+				bind:isAudiobook={state.isAudiobook}
+				playlists={state.playlists}
+				saving={state.saving}
+				onsave={handleSave}
+				oncancel={cancelEdit}
+				onstartedit={startEdit}
+			/>
 				<MappingsList
 					cards={state.cards}
 					playlists={state.playlists}

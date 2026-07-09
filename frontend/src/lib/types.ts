@@ -10,11 +10,13 @@ export interface Card {
 	card_id: string;
 	playlist_uri: string;
 	playlist_name: string | null;
+	is_audiobook: boolean;
 }
 
 export interface ExistingMapping {
 	playlist_uri: string;
 	playlist_name: string | null;
+	is_audiobook: boolean;
 }
 
 export interface Playlist {
