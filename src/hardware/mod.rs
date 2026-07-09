@@ -2,21 +2,40 @@ pub mod gpio;
 pub mod rfid;
 
 use anyhow::Result;
-use log::warn;
-use std::sync::Arc;
+use log::{info, warn};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 // Re-export commonly used types
 pub use gpio::{ButtonEvent, ButtonReader, LedController};
 pub use rfid::RfidReader;
 
+/// How long to wait for a single RFID SPI poll before giving up.
+/// The actual SPI transfer is sub-millisecond, so this is very generous.
+const RFID_READ_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// After this many consecutive failures, drop the stuck reader and
+/// create a fresh one (which hardware-resets the MFRC522 via the RST pin).
+const RFID_REINIT_THRESHOLD: u32 = 3;
+
 /// Hardware manager that coordinates all hardware components
 pub struct HardwareManager {
     pub button: Box<dyn ButtonReader + Send>,
     pub led: Box<dyn LedController + Send>,
-    rfid_reader: Arc<Mutex<Box<dyn RfidReader + Send>>>,
+    /// The RFID reader is stored in an `Option` inside a mutex.  The poll
+    /// **checks out** the reader (sets the slot to `None`), does the blocking
+    /// SPI read on a `spawn_blocking` thread, then **checks it back in**.
+    ///
+    /// If the SPI call hangs, the timeout fires but the thread (and the
+    /// reader it holds) is leaked.  The slot stays `None`, so subsequent
+    /// polls return immediately.  After `RFID_REINIT_THRESHOLD` failures
+    /// a brand-new `Mfrc522RfidReader` is created — its `new()` toggles
+    /// the hardware RST pin and re-initialises SPI, recovering the reader
+    /// without ever blocking the async main loop.
+    rfid_reader: Arc<StdMutex<Option<Box<dyn RfidReader + Send>>>>,
+    rfid_failures: Arc<AtomicU32>,
 }
 
 impl HardwareManager {
@@ -30,38 +49,110 @@ impl HardwareManager {
         Ok(Self {
             button,
             led,
-            rfid_reader: Arc::new(Mutex::new(rfid_reader)),
+            rfid_reader: Arc::new(StdMutex::new(Some(rfid_reader))),
+            rfid_failures: Arc::new(AtomicU32::new(0)),
         })
     }
 
     /// Read RFID card ID if available.
     ///
-    /// The MFRC522 SPI bus can block indefinitely when the reader gets into a
-    /// bad state. We run the poll on a blocking thread with a timeout so the
-    /// async main loop never freezes.
+    /// Uses the checkout/checkin pattern so a stuck SPI call never blocks
+    /// the main loop or prevents reinitialisation. See [`HardwareManager`]
+    /// field docs for details.
     pub async fn read_rfid_card(&self) -> Option<String> {
-        let reader = self.rfid_reader.clone();
+        // --- Check out the reader ---------------------------------------
+        let reader = {
+            let mut guard = self.rfid_reader.lock().ok()?;
+            guard.take()
+        };
+
+        let reader = match reader {
+            Some(r) => r,
+            None => {
+                // The slot is empty: either a previous poll's thread is
+                // still stuck holding the old reader, or a reinit is in
+                // progress.  Count this as a failure and maybe reinit.
+                let failures = self.rfid_failures.fetch_add(1, Ordering::Relaxed) + 1;
+                if failures >= RFID_REINIT_THRESHOLD {
+                    warn!(
+                        "RFID reader stuck ({} consecutive failures), reinitialising...",
+                        failures
+                    );
+                    self.reinit_rfid_reader().await;
+                    self.rfid_failures.store(0, Ordering::Relaxed);
+                }
+                return None;
+            }
+        };
+
+        // --- Poll on a blocking thread with timeout ---------------------
+        let slot = self.rfid_reader.clone();
         let result = timeout(
-            Duration::from_secs(2),
+            RFID_READ_TIMEOUT,
             tokio::task::spawn_blocking(move || {
-                let mut r = reader.blocking_lock();
-                r.read_card_id()
+                let mut reader = reader; // moved into the closure
+                let card_id = reader.read_card_id();
+                // Check reader back in — but only if nobody has installed
+                // a new reader in the meantime (e.g. after a reinit).
+                if let Ok(mut guard) = slot.lock() {
+                    if guard.is_none() {
+                        *guard = Some(reader);
+                    }
+                }
+                card_id
             }),
         )
         .await;
 
         match result {
-            Ok(Ok(card_id)) => card_id,
+            Ok(Ok(card_id)) => {
+                self.rfid_failures.store(0, Ordering::Relaxed);
+                card_id
+            }
             Ok(Err(e)) => {
                 warn!("RFID polling thread panicked: {}", e);
+                self.rfid_failures.fetch_add(1, Ordering::Relaxed);
                 None
             }
             Err(_) => {
-                warn!("RFID poll timed out after 2s, reader may be stuck");
+                warn!(
+                    "RFID poll timed out after {:?}, reader may be stuck",
+                    RFID_READ_TIMEOUT
+                );
+                self.rfid_failures.fetch_add(1, Ordering::Relaxed);
                 None
             }
         }
     }
+
+    /// Create a fresh `Mfrc522RfidReader` and install it in the slot.
+    ///
+    /// `Mfrc522RfidReader::new()` toggles the hardware RST pin (GPIO 25)
+    /// and re-initialises the SPI bus, which recovers the reader from any
+    /// stuck state.  The old reader (held by a leaked thread) is simply
+    /// abandoned — it will be cleaned up when the process exits.
+    async fn reinit_rfid_reader(&self) {
+        let slot = self.rfid_reader.clone();
+        let result = tokio::task::spawn_blocking(move || match rfid::Mfrc522RfidReader::new() {
+            Ok(new_reader) => {
+                if let Ok(mut guard) = slot.lock() {
+                    *guard = Some(Box::new(new_reader));
+                }
+                info!("RFID reader reinitialised successfully");
+                Ok(())
+            }
+            Err(e) => {
+                warn!("Failed to reinitialise RFID reader: {}", e);
+                Err(e)
+            }
+        })
+        .await;
+
+        if let Err(e) = result {
+            warn!("RFID reinit thread panicked: {}", e);
+        }
+    }
+
     /// Check for button events
     pub fn check_button(&mut self) -> Option<ButtonEvent> {
         self.button.check_event()
@@ -82,8 +173,6 @@ impl HardwareManager {
         use crate::hardware::gpio::blink_led;
         blink_led(&mut *self.led, duration).await
     }
-
-
 }
 
 #[cfg(test)]
@@ -139,8 +228,6 @@ mod tests {
         fn is_on(&self) -> bool {
             self.is_on
         }
-
-
     }
 
     struct MockRfidReader {
@@ -159,38 +246,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_hardware_manager_creation() {
+    fn make_hardware(card_id: Option<String>) -> HardwareManager {
         let button = Box::new(MockButtonReader::new(vec![]));
         let led = Box::new(MockLedController::new());
-        let rfid_reader: Box<dyn RfidReader + Send> = Box::new(MockRfidReader::new(None));
-
-        let _hardware = HardwareManager {
+        let rfid_reader: Box<dyn RfidReader + Send> = Box::new(MockRfidReader::new(card_id));
+        HardwareManager {
             button,
             led,
-            rfid_reader: Arc::new(Mutex::new(rfid_reader)),
-        };
+            rfid_reader: Arc::new(StdMutex::new(Some(rfid_reader))),
+            rfid_failures: Arc::new(AtomicU32::new(0)),
+        }
+    }
 
-        // Hardware manager created successfully
+    #[test]
+    fn test_hardware_manager_creation() {
+        let _hardware = make_hardware(None);
         assert!(true);
     }
 
     #[tokio::test]
     async fn test_led_control() {
-        let button = Box::new(MockButtonReader::new(vec![]));
-        let led = Box::new(MockLedController::new());
-        let rfid_reader: Box<dyn RfidReader + Send> = Box::new(MockRfidReader::new(None));
-
-        let mut hardware = HardwareManager {
-            button,
-            led,
-            rfid_reader: Arc::new(Mutex::new(rfid_reader)),
-        };
-
-        // Test LED control through hardware manager
+        let mut hardware = make_hardware(None);
         hardware.led_on().unwrap();
         hardware.led_off().unwrap();
-        // LED operations completed successfully
         assert!(true);
     }
 
@@ -207,7 +285,8 @@ mod tests {
         let mut hardware = HardwareManager {
             button,
             led,
-            rfid_reader: Arc::new(Mutex::new(rfid_reader)),
+            rfid_reader: Arc::new(StdMutex::new(Some(rfid_reader))),
+            rfid_failures: Arc::new(AtomicU32::new(0)),
         };
 
         assert!(matches!(hardware.check_button(), Some(ButtonEvent::Pressed)));
@@ -218,18 +297,7 @@ mod tests {
     #[tokio::test]
     async fn test_rfid_reading() {
         let card_id = "test_card_123".to_string();
-        let button = Box::new(MockButtonReader::new(vec![]));
-        let led = Box::new(MockLedController::new());
-        let rfid_reader: Box<dyn RfidReader + Send> = Box::new(MockRfidReader::new(Some(card_id.clone())));
-
-        let hardware = HardwareManager {
-            button,
-            led,
-            rfid_reader: Arc::new(Mutex::new(rfid_reader)),
-        };
-
+        let hardware = make_hardware(Some(card_id.clone()));
         assert_eq!(hardware.read_rfid_card().await, Some(card_id));
-        // RFID reading test completed successfully
-        assert!(true);
     }
 }
