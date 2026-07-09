@@ -6,16 +6,33 @@ use hal::{Delay, SpidevBus};
 use log::{debug, info};
 use mfrc522::comm::blocking::spi::{DummyDelay, SpiInterface};
 use mfrc522::{Initialized, Mfrc522};
-use rppal::gpio::{Gpio, OutputPin};
+use rppal::gpio::OutputPin;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 /// Time to hold the RST pin low/high during MFRC522 hardware reset.
 const MFRC522_RESET_DELAY: Duration = Duration::from_millis(50);
 
-/// Wrapper around rppal's OutputPin that implements embedded-hal 1.0 traits.
-/// Replaces the deprecated sysfs GPIO interface (SysfsPin) which doesn't work
-/// with newer kernels that use dynamic gpiochip base offsets.
-struct CsPin(OutputPin);
+/// Type alias for a GPIO output pin shared between the HardwareManager and
+/// the current RFID reader.  By sharing ownership we ensure that the pin
+/// survives even when a reader is abandoned inside a leaked `spawn_blocking`
+/// thread (which happens when an SPI poll times out).  Without sharing,
+/// `rppal` refuses to re-acquire the pin, making reinit impossible.
+pub type SharedOutputPin = Arc<StdMutex<OutputPin>>;
+
+/// Acquire a GPIO output pin and wrap it in a `SharedOutputPin`.
+pub fn acquire_shared_output_pin(gpio: &rppal::gpio::Gpio, pin_num: u8) -> Result<SharedOutputPin> {
+    let pin = gpio
+        .get(pin_num)
+        .with_context(|| format!("Failed to get GPIO pin {}", pin_num))?
+        .into_output();
+    Ok(Arc::new(StdMutex::new(pin)))
+}
+
+/// Wrapper around a `SharedOutputPin` that implements embedded-hal 1.0
+/// `OutputPin` traits, so it can be used as the chip-select pin for
+/// `ExclusiveDevice`.
+struct CsPin(SharedOutputPin);
 
 impl embedded_hal::digital::ErrorType for CsPin {
     type Error = std::convert::Infallible;
@@ -23,12 +40,12 @@ impl embedded_hal::digital::ErrorType for CsPin {
 
 impl embedded_hal::digital::OutputPin for CsPin {
     fn set_low(&mut self) -> Result<(), Self::Error> {
-        self.0.set_low();
+        self.0.lock().unwrap().set_low();
         Ok(())
     }
 
     fn set_high(&mut self) -> Result<(), Self::Error> {
-        self.0.set_high();
+        self.0.lock().unwrap().set_high();
         Ok(())
     }
 }
@@ -45,18 +62,31 @@ type Mfrc522Device =
 /// MFRC522 RFID reader implementation
 pub struct Mfrc522RfidReader {
     mfrc522: Mfrc522Device,
-    _rst_pin: OutputPin,
+    /// Kept alive so the RST pin stays high (MFRC522 out of reset) even
+    /// after this reader is abandoned in a leaked thread.
+    _rst_pin: SharedOutputPin,
     last_read_time: Option<Instant>,
     last_card_id: Option<String>,
     read_cooldown: Duration,
 }
 
 impl Mfrc522RfidReader {
-    /// Create a new MFRC522 RFID reader
-    pub fn new(rst_pin_num: u8, sda_pin_num: u8, read_cooldown: Duration) -> Result<Self> {
+    /// Create a new MFRC522 RFID reader using shared GPIO pins.
+    ///
+    /// `cs_pin` and `rst_pin` are `Arc<Mutex<OutputPin>>` so that the
+    /// `HardwareManager` retains ownership and can reuse them when
+    /// creating a fresh reader after a timeout — without needing to
+    /// re-acquire the pins from `rppal` (which would fail because the
+    /// abandoned reader in the leaked thread still holds them).
+    pub fn new(
+        cs_pin: SharedOutputPin,
+        rst_pin: SharedOutputPin,
+        read_cooldown: Duration,
+    ) -> Result<Self> {
         info!("Initializing MFRC522 RFID reader...");
 
-        // Initialize SPI
+        // Initialize SPI — a fresh file descriptor each time; the kernel
+        // allows multiple opens of /dev/spidev0.0.
         let mut spi = SpidevBus::open("/dev/spidev0.0")
             .context("Failed to open SPI device")?;
         let options = SpidevOptions::new()
@@ -66,31 +96,23 @@ impl Mfrc522RfidReader {
         spi.configure(&options)
             .context("Failed to configure SPI")?;
 
-        // Setup chip select pin (matching SimpleMFRC522 standard)
-        // Using rppal which accesses /dev/gpiomem directly with BCM numbering,
-        // avoiding the deprecated sysfs GPIO export that breaks on newer kernels.
-        let gpio = Gpio::new().context("Failed to initialize GPIO")?;
-        let mut cs_pin = gpio
-            .get(sda_pin_num)
-            .with_context(|| format!("Failed to get GPIO pin {}", sda_pin_num))?
-            .into_output();
-        cs_pin.set_high();
+        // Ensure chip select is idle (high)
+        cs_pin.lock().unwrap().set_high();
 
-        // Bring MFRC522 out of reset (RST pin, active high)
-        let mut rst_pin = gpio
-            .get(rst_pin_num)
-            .with_context(|| format!("Failed to get GPIO pin {}", rst_pin_num))?
-            .into_output();
-        rst_pin.set_low();
-        std::thread::sleep(MFRC522_RESET_DELAY);
-        rst_pin.set_high();
-        std::thread::sleep(MFRC522_RESET_DELAY);
+        // Hardware reset the MFRC522 via the shared RST pin
+        {
+            let mut rst = rst_pin.lock().unwrap();
+            rst.set_low();
+            std::thread::sleep(MFRC522_RESET_DELAY);
+            rst.set_high();
+            std::thread::sleep(MFRC522_RESET_DELAY);
+        }
 
         // Create SPI device and MFRC522 interface, init once
         let spi = ExclusiveDevice::new(spi, CsPin(cs_pin), Delay)?;
         let itf = SpiInterface::new(spi);
 
-        info!("MFRC522 SPI interface initialized (RST on GPIO {})", rst_pin_num);
+        info!("MFRC522 SPI interface initialized");
 
         let mfrc522 = match Mfrc522::new(itf).init() {
             Ok(m) => {

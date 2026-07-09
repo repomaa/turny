@@ -1,7 +1,7 @@
 pub mod gpio;
 pub mod rfid;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use log::{info, warn};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -32,7 +32,14 @@ pub struct HardwareManager {
     rfid_reader: Arc<StdMutex<Option<Box<dyn RfidReader + Send>>>>,
     rfid_failures: Arc<AtomicU32>,
     rfid_reinit_backoff: Duration,
+    #[allow(dead_code)]
     gpio_config: crate::config::GpioConfig,
+    /// Shared GPIO pins for the RFID reader.  Acquired once in [`new`] and
+    /// reused across reader reinitialisations, so that abandoning a reader
+    /// in a leaked thread (after an SPI poll timeout) does not prevent
+    /// reinit — `rppal` would otherwise refuse to re-acquire the pins.
+    rfid_cs_pin: Option<rfid::SharedOutputPin>,
+    rfid_rst_pin: Option<rfid::SharedOutputPin>,
 }
 
 impl HardwareManager {
@@ -40,8 +47,17 @@ impl HardwareManager {
     pub fn new(gpio_config: &crate::config::GpioConfig) -> Result<Self> {
         let button = Box::new(gpio::GpioButtonReader::new(gpio_config.button_pin)?);
         let led = Box::new(gpio::GpioLedController::new(gpio_config.led_pin)?);
-        let rfid_reader: Box<dyn RfidReader + Send> =
-            Box::new(rfid::Mfrc522RfidReader::new(gpio_config.rfid_reset_pin, gpio_config.rfid_sda_pin, Duration::from_millis(100))?);
+
+        // Acquire the RFID GPIO pins once, shared between the manager and
+        // all future reader instances so reinit never needs to re-acquire.
+        let gpio = rppal::gpio::Gpio::new()
+            .context("Failed to initialize GPIO for RFID pins")?;
+        let cs_pin = rfid::acquire_shared_output_pin(&gpio, gpio_config.rfid_sda_pin)?;
+        let rst_pin = rfid::acquire_shared_output_pin(&gpio, gpio_config.rfid_reset_pin)?;
+
+        let rfid_reader: Box<dyn RfidReader + Send> = Box::new(
+            rfid::Mfrc522RfidReader::new(cs_pin.clone(), rst_pin.clone(), Duration::from_millis(100))?,
+        );
 
         Ok(Self {
             button,
@@ -50,6 +66,8 @@ impl HardwareManager {
             rfid_failures: Arc::new(AtomicU32::new(0)),
             rfid_reinit_backoff: Duration::from_secs(1),
             gpio_config: gpio_config.clone(),
+            rfid_cs_pin: Some(cs_pin),
+            rfid_rst_pin: Some(rst_pin),
         })
     }
 
@@ -141,16 +159,33 @@ impl HardwareManager {
 
     /// Create a fresh `Mfrc522RfidReader` and install it in the slot.
     ///
-    /// `Mfrc522RfidReader::new()` toggles the hardware RST pin (GPIO 25)
+    /// `Mfrc522RfidReader::new()` toggles the hardware RST pin
     /// and re-initialises the SPI bus, which recovers the reader from any
     /// stuck state.  The old reader (held by a leaked thread) is simply
     /// abandoned — it will be cleaned up when the process exits.
+    ///
+    /// The GPIO pins are shared (`Arc<Mutex<OutputPin>>`) so this method
+    /// does **not** need to re-acquire them from `rppal`, which would fail
+    /// because the abandoned reader still holds its references.
     /// Returns `true` if reinit succeeded, `false` if it failed.
     async fn reinit_rfid_reader(&self) -> bool {
         let slot = self.rfid_reader.clone();
-        let gpio_config = self.gpio_config.clone();
+        let cs_pin = match &self.rfid_cs_pin {
+            Some(p) => p.clone(),
+            None => {
+                warn!("Cannot reinit RFID reader: shared CS pin not available");
+                return false;
+            }
+        };
+        let rst_pin = match &self.rfid_rst_pin {
+            Some(p) => p.clone(),
+            None => {
+                warn!("Cannot reinit RFID reader: shared RST pin not available");
+                return false;
+            }
+        };
         let result = tokio::task::spawn_blocking(move || {
-            rfid::Mfrc522RfidReader::new(gpio_config.rfid_reset_pin, gpio_config.rfid_sda_pin, Duration::from_millis(100))
+            rfid::Mfrc522RfidReader::new(cs_pin, rst_pin, Duration::from_millis(100))
         })
         .await;
 
@@ -283,6 +318,8 @@ mod tests {
             rfid_failures: Arc::new(AtomicU32::new(0)),
             rfid_reinit_backoff: Duration::from_secs(1),
             gpio_config: crate::config::GpioConfig::default(),
+            rfid_cs_pin: None,
+            rfid_rst_pin: None,
         }
     }
 
@@ -318,6 +355,8 @@ mod tests {
             rfid_failures: Arc::new(AtomicU32::new(0)),
             rfid_reinit_backoff: Duration::from_secs(1),
             gpio_config: crate::config::GpioConfig::default(),
+            rfid_cs_pin: None,
+            rfid_rst_pin: None,
         };
 
         assert!(matches!(hardware.check_button(), Some(ButtonEvent::Pressed)));
