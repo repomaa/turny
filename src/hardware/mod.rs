@@ -2,7 +2,11 @@ pub mod gpio;
 pub mod rfid;
 
 use anyhow::Result;
+use log::warn;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
+use tokio::time::timeout;
 
 // Re-export commonly used types
 pub use gpio::{ButtonEvent, ButtonReader, LedController};
@@ -12,7 +16,7 @@ pub use rfid::RfidReader;
 pub struct HardwareManager {
     pub button: Box<dyn ButtonReader + Send>,
     pub led: Box<dyn LedController + Send>,
-    pub rfid_reader: Box<dyn RfidReader + Send>,
+    rfid_reader: Arc<Mutex<Box<dyn RfidReader + Send>>>,
 }
 
 impl HardwareManager {
@@ -20,22 +24,44 @@ impl HardwareManager {
     pub fn new() -> Result<Self> {
         let button = Box::new(gpio::GpioButtonReader::new(crate::config::BUTTON_PIN)?);
         let led = Box::new(gpio::GpioLedController::new(crate::config::LED_PIN)?);
-        let rfid_reader = Box::new(rfid::Mfrc522RfidReader::new()?);
+        let rfid_reader: Box<dyn RfidReader + Send> =
+            Box::new(rfid::Mfrc522RfidReader::new()?);
 
         Ok(Self {
             button,
             led,
-            rfid_reader,
+            rfid_reader: Arc::new(Mutex::new(rfid_reader)),
         })
     }
 
-    /// Read RFID card ID if available
-    pub fn read_rfid_card(&mut self) -> Option<String> {
-        self.rfid_reader.read_card_id()
+    /// Read RFID card ID if available.
+    ///
+    /// The MFRC522 SPI bus can block indefinitely when the reader gets into a
+    /// bad state. We run the poll on a blocking thread with a timeout so the
+    /// async main loop never freezes.
+    pub async fn read_rfid_card(&self) -> Option<String> {
+        let reader = self.rfid_reader.clone();
+        let result = timeout(
+            Duration::from_secs(2),
+            tokio::task::spawn_blocking(move || {
+                let mut r = reader.blocking_lock();
+                r.read_card_id()
+            }),
+        )
+        .await;
+
+        match result {
+            Ok(Ok(card_id)) => card_id,
+            Ok(Err(e)) => {
+                warn!("RFID polling thread panicked: {}", e);
+                None
+            }
+            Err(_) => {
+                warn!("RFID poll timed out after 2s, reader may be stuck");
+                None
+            }
+        }
     }
-
-
-
     /// Check for button events
     pub fn check_button(&mut self) -> Option<ButtonEvent> {
         self.button.check_event()
@@ -137,12 +163,12 @@ mod tests {
     fn test_hardware_manager_creation() {
         let button = Box::new(MockButtonReader::new(vec![]));
         let led = Box::new(MockLedController::new());
-        let rfid_reader = Box::new(MockRfidReader::new(None));
+        let rfid_reader: Box<dyn RfidReader + Send> = Box::new(MockRfidReader::new(None));
 
         let _hardware = HardwareManager {
             button,
             led,
-            rfid_reader,
+            rfid_reader: Arc::new(Mutex::new(rfid_reader)),
         };
 
         // Hardware manager created successfully
@@ -153,12 +179,12 @@ mod tests {
     async fn test_led_control() {
         let button = Box::new(MockButtonReader::new(vec![]));
         let led = Box::new(MockLedController::new());
-        let rfid_reader = Box::new(MockRfidReader::new(None));
+        let rfid_reader: Box<dyn RfidReader + Send> = Box::new(MockRfidReader::new(None));
 
         let mut hardware = HardwareManager {
             button,
             led,
-            rfid_reader,
+            rfid_reader: Arc::new(Mutex::new(rfid_reader)),
         };
 
         // Test LED control through hardware manager
@@ -176,12 +202,12 @@ mod tests {
         ];
         let button = Box::new(MockButtonReader::new(events));
         let led = Box::new(MockLedController::new());
-        let rfid_reader = Box::new(MockRfidReader::new(None));
+        let rfid_reader: Box<dyn RfidReader + Send> = Box::new(MockRfidReader::new(None));
 
         let mut hardware = HardwareManager {
             button,
             led,
-            rfid_reader,
+            rfid_reader: Arc::new(Mutex::new(rfid_reader)),
         };
 
         assert!(matches!(hardware.check_button(), Some(ButtonEvent::Pressed)));
@@ -189,20 +215,20 @@ mod tests {
         assert!(hardware.check_button().is_none());
     }
 
-    #[test]
-    fn test_rfid_reading() {
+    #[tokio::test]
+    async fn test_rfid_reading() {
         let card_id = "test_card_123".to_string();
         let button = Box::new(MockButtonReader::new(vec![]));
         let led = Box::new(MockLedController::new());
-        let rfid_reader = Box::new(MockRfidReader::new(Some(card_id.clone())));
+        let rfid_reader: Box<dyn RfidReader + Send> = Box::new(MockRfidReader::new(Some(card_id.clone())));
 
-        let mut hardware = HardwareManager {
+        let hardware = HardwareManager {
             button,
             led,
-            rfid_reader,
+            rfid_reader: Arc::new(Mutex::new(rfid_reader)),
         };
 
-        assert_eq!(hardware.read_rfid_card(), Some(card_id));
+        assert_eq!(hardware.read_rfid_card().await, Some(card_id));
         // RFID reading test completed successfully
         assert!(true);
     }

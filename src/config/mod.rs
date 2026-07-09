@@ -265,7 +265,7 @@ impl Default for TurnyConfig {
             settings: SettingsConfig {
                 poll_interval: 50,
                 default_volume: 70,
-                absence_threshold: 5,
+                absence_threshold: 30,
             },
             playlists: HashMap::new(),
             audio: AudioConfig {

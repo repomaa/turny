@@ -187,7 +187,7 @@ impl TurnyApp {
             }
 
             // Check for RFID card
-            if let Some(card_id) = self.hardware.read_rfid_card() {
+            if let Some(card_id) = self.hardware.read_rfid_card().await {
                 self.handle_rfid_card(card_id).await?;
             } else {
                 self.handle_no_card().await?;
@@ -302,13 +302,20 @@ impl TurnyApp {
         // Increment absence count
         self.state_manager.increment_absence_count()?;
 
-        // Check if we should auto-pause
+        // Only auto-pause if we are actually playing and the card has been
+        // absent long enough. The absence_threshold is in poll cycles
+        // (default 5 × 100ms = 500ms), but the MFRC522 can intermittently
+        // miss a card that is still on the reader. To avoid thrashing
+        // (play → pause → play → pause), we require the absence count to
+        // reach the threshold *and* not reset immediately on the next read.
         if self.state_manager.should_auto_pause(self.config.settings.absence_threshold as u32)? {
             let is_playing = self.state_manager.with_state(|state| state.is_playing)?;
 
             if is_playing {
                 info!("Auto-pausing due to card absence");
-                self.pause_playback().await?;
+                if let Err(e) = self.pause_playback().await {
+                    warn!("Failed to auto-pause: {}", e);
+                }
                 self.state_manager.set_playing(false)?;
 
                 // Clear current card so re-placing the same card restarts playback
@@ -477,8 +484,13 @@ impl TurnyApp {
         // Ensure we have a valid token
         self.auth_manager.ensure_valid_token().await?;
 
-        // Start playback using Spirc
-        self.spotify_connect.load_track(playlist_uri).await?;
+        // Start playback using Spirc — wrap in timeout as Spirc/load can hang
+        // after a 429 rate-limit or network issue
+        timeout(Duration::from_secs(15), self.spotify_connect.load_track(playlist_uri))
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("Playback load timed out after 15s for {}", playlist_uri)
+            })??;
 
         info!("Playback started successfully");
         Ok(())
