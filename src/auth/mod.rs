@@ -7,6 +7,10 @@ use std::sync::{Arc, Mutex};
 
 use crate::web::Db;
 
+pub mod playback;
+
+pub use playback::{PlaybackAuth, PlaybackStatus};
+
 /// OAuth token information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenInfo {
@@ -121,7 +125,9 @@ impl AuthManager {
     }
 
     fn lock_token(&self) -> Result<std::sync::MutexGuard<'_, Option<TokenInfo>>> {
-        self.token_info.lock().map_err(|e| anyhow::anyhow!("AuthManager mutex lock error: {}", e))
+        self.token_info
+            .lock()
+            .map_err(|e| anyhow::anyhow!("AuthManager mutex lock error: {}", e))
     }
 
     /// Send a token request to the Spotify OAuth endpoint and store the result.
@@ -159,7 +165,9 @@ impl AuthManager {
             *token_guard = Some(token_info.clone());
         }
 
-        self.save_token(&token_info).await.context("Failed to save token")?;
+        self.save_token(&token_info)
+            .await
+            .context("Failed to save token")?;
 
         Ok(token_info)
     }
@@ -204,7 +212,9 @@ impl AuthManager {
             ("client_secret", &self.client_secret),
         ];
 
-        let token_info = self.perform_token_request(&params, Some(refresh_token)).await?;
+        let token_info = self
+            .perform_token_request(&params, Some(refresh_token))
+            .await?;
 
         info!("Successfully refreshed access token");
         Ok(token_info)
@@ -222,7 +232,9 @@ impl AuthManager {
             let mut token = self.lock_token()?;
             *token = Some(token_info.clone());
         }
-        self.save_token(&token_info).await.context("Failed to save token")?;
+        self.save_token(&token_info)
+            .await
+            .context("Failed to save token")?;
         Ok(())
     }
 
@@ -260,7 +272,9 @@ impl AuthManager {
 
         // Remove token from DB
         if let Some(db) = &self.db {
-            db.clear_token().await.context("Failed to remove token from database")?;
+            db.clear_token()
+                .await
+                .context("Failed to remove token from database")?;
         }
         Ok(())
     }
@@ -270,7 +284,9 @@ impl AuthManager {
         let json = serde_json::to_string_pretty(token_info).context("Failed to serialize token")?;
 
         if let Some(db) = &self.db {
-            db.save_token(&json).await.context("Failed to save token to database")?;
+            db.save_token(&json)
+                .await
+                .context("Failed to save token to database")?;
             info!("Token saved to database");
         } else {
             warn!("No database available, token will not be persisted");
@@ -295,21 +311,29 @@ impl AuthManager {
             // No token in DB — try migrating from legacy file
             let file_path = match std::env::var("HOME") {
                 Ok(h) => std::path::PathBuf::from(h).join("spotify_token.json"),
-                Err(_) => return Err(anyhow::anyhow!("No token in database and HOME not set, cannot migrate from legacy file")),
+                Err(_) => {
+                    return Err(anyhow::anyhow!(
+                        "No token in database and HOME not set, cannot migrate from legacy file"
+                    ))
+                }
             };
 
             if tokio::fs::try_exists(&file_path).await.unwrap_or(false) {
                 info!("Found legacy token file, migrating to database...");
                 let json = tokio::fs::read_to_string(&file_path)
                     .await
-                    .with_context(|| format!("Failed to read legacy token file: {:?}", file_path))?;
+                    .with_context(|| {
+                        format!("Failed to read legacy token file: {:?}", file_path)
+                    })?;
                 let token_info: TokenInfo =
                     serde_json::from_str(&json).context("Failed to deserialize legacy token")?;
                 {
                     let mut token = self.lock_token()?;
                     *token = Some(token_info);
                 }
-                db.save_token(&json).await.context("Failed to migrate token to database")?;
+                db.save_token(&json)
+                    .await
+                    .context("Failed to migrate token to database")?;
                 if let Err(e) = tokio::fs::remove_file(&file_path).await {
                     warn!("Failed to remove legacy token file after migration: {}", e);
                 }
@@ -344,7 +368,7 @@ impl AuthManager {
     }
 }
 
-fn parse_token_response(
+pub(crate) fn parse_token_response(
     token_response: serde_json::Value,
     default_refresh_token: Option<String>,
 ) -> Result<TokenInfo> {

@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use embedded_hal_bus::spi::ExclusiveDevice;
-use linux_embedded_hal as hal;
 use hal::spidev::{SpiModeFlags, SpidevOptions};
 use hal::{Delay, SpidevBus};
+use linux_embedded_hal as hal;
 use log::{debug, info};
 use mfrc522::comm::blocking::spi::{DummyDelay, SpiInterface};
 use mfrc522::{Initialized, Mfrc522};
@@ -87,14 +87,12 @@ impl Mfrc522RfidReader {
 
         // Initialize SPI — a fresh file descriptor each time; the kernel
         // allows multiple opens of /dev/spidev0.0.
-        let mut spi = SpidevBus::open("/dev/spidev0.0")
-            .context("Failed to open SPI device")?;
+        let mut spi = SpidevBus::open("/dev/spidev0.0").context("Failed to open SPI device")?;
         let options = SpidevOptions::new()
             .max_speed_hz(1_000_000)
             .mode(SpiModeFlags::SPI_MODE_0 | SpiModeFlags::SPI_NO_CS)
             .build();
-        spi.configure(&options)
-            .context("Failed to configure SPI")?;
+        spi.configure(&options).context("Failed to configure SPI")?;
 
         // Ensure chip select is idle (high)
         cs_pin.lock().unwrap().set_high();
@@ -144,29 +142,28 @@ impl Mfrc522RfidReader {
     /// Perform the actual card reading operation
     fn read_card_internal(&mut self) -> Result<Option<String>> {
         match self.mfrc522.wupa() {
-            Ok(atqa) => {
-                match self.mfrc522.select(&atqa) {
-                    Ok(uid) => {
-                        let uid_bytes = uid.as_bytes();
-                        let uid_string = uid_bytes.iter()
-                            .map(|b| format!("{:02x}", b))
-                            .collect::<Vec<_>>()
-                            .join("");
+            Ok(atqa) => match self.mfrc522.select(&atqa) {
+                Ok(uid) => {
+                    let uid_bytes = uid.as_bytes();
+                    let uid_string = uid_bytes
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<Vec<_>>()
+                        .join("");
 
-                        debug!("RFID card detected: {}", uid_string);
+                    debug!("RFID card detected: {}", uid_string);
 
-                        if let Err(e) = self.mfrc522.hlta() {
-                            debug!("MFRC522 hlta failed (non-critical): {:?}", e);
-                        }
-
-                        Ok(Some(uid_string))
+                    if let Err(e) = self.mfrc522.hlta() {
+                        debug!("MFRC522 hlta failed (non-critical): {:?}", e);
                     }
-                    Err(e) => {
-                        debug!("RFID select failed: {:?}", e);
-                        Ok(None)
-                    }
+
+                    Ok(Some(uid_string))
                 }
-            }
+                Err(e) => {
+                    debug!("RFID select failed: {:?}", e);
+                    Ok(None)
+                }
+            },
             Err(e) => {
                 debug!("RFID REQA failed: {:?}", e);
                 Ok(None)
@@ -205,5 +202,3 @@ impl RfidReader for Mfrc522RfidReader {
         }
     }
 }
-
-

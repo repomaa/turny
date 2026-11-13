@@ -89,8 +89,8 @@ impl TurnyConfig {
         let contents = tokio::fs::read_to_string(path)
             .await
             .with_context(|| format!("Failed to read config file: {}", path))?;
-        let config: TurnyConfig = toml::from_str(&contents)
-            .context("Failed to parse config file")?;
+        let config: TurnyConfig =
+            toml::from_str(&contents).context("Failed to parse config file")?;
         Ok(config)
     }
 
@@ -174,7 +174,12 @@ impl TurnyConfig {
             ("rfid_reset_pin", self.gpio.rfid_reset_pin),
             ("rfid_sda_pin", self.gpio.rfid_sda_pin),
         ] {
-            ensure!(pin <= MAX_GPIO_PIN, "GPIO {} must be <= {}", name, MAX_GPIO_PIN);
+            ensure!(
+                pin <= MAX_GPIO_PIN,
+                "GPIO {} must be <= {}",
+                name,
+                MAX_GPIO_PIN
+            );
         }
 
         ensure!(

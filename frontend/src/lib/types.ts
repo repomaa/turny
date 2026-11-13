@@ -6,6 +6,14 @@ export interface AuthStatus {
 	authenticated: boolean;
 }
 
+export interface PlaybackStatus {
+	paired: boolean;
+	phase: 'idle' | 'pending' | 'granted' | 'failed';
+	user_code?: string | null;
+	verification_uri?: string | null;
+	error?: string | null;
+}
+
 export interface Card {
 	card_id: string;
 	playlist_uri: string;

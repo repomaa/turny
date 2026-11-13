@@ -23,6 +23,7 @@
 	import Toast from '$lib/components/Toast.svelte';
 	import NowPlayingDisplay from '$lib/components/NowPlaying.svelte';
 	import PlayerControls from '$lib/components/PlayerControls.svelte';
+	import PlaybackPairing from '$lib/components/PlaybackPairing.svelte';
 	import MappingEditor from '$lib/components/MappingEditor.svelte';
 	import MappingsList from '$lib/components/MappingsList.svelte';
 
@@ -313,6 +314,8 @@
 					</div>
 				{/if}
 			</section>
+
+			<PlaybackPairing onerror={showError} />
 
 			<section class="mb-6 rounded-lg bg-gray-800 p-6">
 				<h2 class="mb-4 text-lg font-semibold text-gray-300">RFID Card Mapping</h2>

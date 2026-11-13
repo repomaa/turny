@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 const SETTING_KEY_TOKEN: &str = "spotify_token";
+const SETTING_KEY_PLAYBACK_TOKEN: &str = "playback_token";
 const SETTING_KEY_VOLUME: &str = "volume";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,7 +172,9 @@ impl Db {
     pub async fn get_all_mappings(&self) -> Result<Vec<CardMapping>> {
         let conn = self.lock().await;
         let mut stmt = conn
-            .prepare_cached("SELECT card_id, playlist_uri, playlist_name, is_audiobook FROM card_mappings")
+            .prepare_cached(
+                "SELECT card_id, playlist_uri, playlist_name, is_audiobook FROM card_mappings",
+            )
             .context("Failed to prepare query")?;
         let mappings = stmt
             .query_map([], |row| {
@@ -248,7 +251,9 @@ impl Db {
     pub async fn get_audiobook_progress(&self, card_id: &str) -> Result<Option<AudiobookProgress>> {
         let conn = self.lock().await;
         let mut stmt = conn
-            .prepare_cached("SELECT track_uri, position_ms FROM audiobook_progress WHERE card_id = ?1")
+            .prepare_cached(
+                "SELECT track_uri, position_ms FROM audiobook_progress WHERE card_id = ?1",
+            )
             .context("Failed to prepare query")?;
         let result = stmt
             .query_row(rusqlite::params![card_id], |row| {
@@ -306,7 +311,8 @@ impl Db {
     }
 
     pub async fn set_volume(&self, volume: u8) -> Result<()> {
-        self.set_setting(SETTING_KEY_VOLUME, &volume.to_string()).await
+        self.set_setting(SETTING_KEY_VOLUME, &volume.to_string())
+            .await
     }
 
     pub async fn save_token(&self, token_json: &str) -> Result<()> {
@@ -326,6 +332,25 @@ impl Db {
             rusqlite::params![SETTING_KEY_TOKEN],
         )
         .context("Failed to clear token from database")?;
+        Ok(())
+    }
+
+    pub async fn save_playback_token(&self, token_json: &str) -> Result<()> {
+        self.set_setting(SETTING_KEY_PLAYBACK_TOKEN, token_json)
+            .await
+    }
+
+    pub async fn load_playback_token(&self) -> Result<Option<String>> {
+        self.get_setting(SETTING_KEY_PLAYBACK_TOKEN).await
+    }
+
+    pub async fn clear_playback_token(&self) -> Result<()> {
+        let conn = self.lock().await;
+        conn.execute(
+            "DELETE FROM settings WHERE key = ?1",
+            rusqlite::params![SETTING_KEY_PLAYBACK_TOKEN],
+        )
+        .context("Failed to clear playback token from database")?;
         Ok(())
     }
 }

@@ -50,14 +50,15 @@ impl HardwareManager {
 
         // Acquire the RFID GPIO pins once, shared between the manager and
         // all future reader instances so reinit never needs to re-acquire.
-        let gpio = rppal::gpio::Gpio::new()
-            .context("Failed to initialize GPIO for RFID pins")?;
+        let gpio = rppal::gpio::Gpio::new().context("Failed to initialize GPIO for RFID pins")?;
         let cs_pin = rfid::acquire_shared_output_pin(&gpio, gpio_config.rfid_sda_pin)?;
         let rst_pin = rfid::acquire_shared_output_pin(&gpio, gpio_config.rfid_reset_pin)?;
 
-        let rfid_reader: Box<dyn RfidReader + Send> = Box::new(
-            rfid::Mfrc522RfidReader::new(cs_pin.clone(), rst_pin.clone(), Duration::from_millis(100))?,
-        );
+        let rfid_reader: Box<dyn RfidReader + Send> = Box::new(rfid::Mfrc522RfidReader::new(
+            cs_pin.clone(),
+            rst_pin.clone(),
+            Duration::from_millis(100),
+        )?);
 
         Ok(Self {
             button,
@@ -102,8 +103,8 @@ impl HardwareManager {
                         // hardware is unavailable (e.g. GPIO pin still held
                         // by an abandoned reader from a timed-out poll).
                         tokio::time::sleep(self.rfid_reinit_backoff).await;
-                        self.rfid_reinit_backoff = (self.rfid_reinit_backoff * 2)
-                            .min(RFID_REINIT_BACKOFF_MAX);
+                        self.rfid_reinit_backoff =
+                            (self.rfid_reinit_backoff * 2).min(RFID_REINIT_BACKOFF_MAX);
                     } else {
                         self.rfid_reinit_backoff = Duration::from_secs(1);
                     }
@@ -368,8 +369,14 @@ mod tests {
             rfid_rst_pin: None,
         };
 
-        assert!(matches!(hardware.check_button(), Some(ButtonEvent::Pressed)));
-        assert!(matches!(hardware.check_button(), Some(ButtonEvent::Released(_))));
+        assert!(matches!(
+            hardware.check_button(),
+            Some(ButtonEvent::Pressed)
+        ));
+        assert!(matches!(
+            hardware.check_button(),
+            Some(ButtonEvent::Released(_))
+        ));
         assert!(hardware.check_button().is_none());
     }
 

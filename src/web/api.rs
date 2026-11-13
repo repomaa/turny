@@ -9,8 +9,8 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 
 use super::AppState;
-use crate::web::events::PlayerCommand;
 use super::MAX_PENDING_AUTH_STATES;
+use crate::web::events::PlayerCommand;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OAuthStateData {
@@ -34,13 +34,12 @@ impl IntoResponse for ApiError {
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             ApiError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "Rate limited".to_string()),
-            ApiError::ServiceUnavailable => (StatusCode::SERVICE_UNAVAILABLE, "Service unavailable".to_string()),
+            ApiError::ServiceUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Service unavailable".to_string(),
+            ),
         };
-        (
-            status,
-            Json(serde_json::json!({ "error": message })),
-        )
-            .into_response()
+        (status, Json(serde_json::json!({ "error": message }))).into_response()
     }
 }
 
@@ -138,9 +137,9 @@ pub async fn auth_callback(
         return Err(ApiError::BadRequest(format!("Auth error: {}", err)));
     }
 
-    let code = query.code.ok_or_else(|| {
-        ApiError::BadRequest("Missing 'code' query parameter".to_string())
-    })?;
+    let code = query
+        .code
+        .ok_or_else(|| ApiError::BadRequest("Missing 'code' query parameter".to_string()))?;
     let state_param = query.state.unwrap_or_default();
 
     // The auth proxy passes the original base64url-encoded state JSON
@@ -158,7 +157,9 @@ pub async fn auth_callback(
         states.remove(csrf)
     };
     if !valid {
-        return Err(ApiError::BadRequest("Invalid or expired CSRF state".to_string()));
+        return Err(ApiError::BadRequest(
+            "Invalid or expired CSRF state".to_string(),
+        ));
     }
 
     state
@@ -173,16 +174,51 @@ pub async fn auth_callback(
 pub async fn get_auth_status(
     State(state): State<AppState>,
 ) -> Result<Json<AuthStatusResponse>, ApiError> {
-    let authenticated = state.auth_manager.has_valid_token().map_err(ApiError::from)?;
+    let authenticated = state
+        .auth_manager
+        .has_valid_token()
+        .map_err(ApiError::from)?;
     Ok(Json(AuthStatusResponse { authenticated }))
 }
 
-pub async fn auth_logout(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
-    state.auth_manager.clear_token().await.map_err(ApiError::from)?;
+pub async fn auth_logout(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state
+        .auth_manager
+        .clear_token()
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(serde_json::json!({})))
 }
 
-pub async fn list_cards(State(state): State<AppState>) -> Result<Json<Vec<crate::web::db::CardMapping>>, ApiError> {
+pub async fn get_playback_status(
+    State(state): State<AppState>,
+) -> Result<Json<crate::auth::PlaybackStatus>, ApiError> {
+    Ok(Json(state.playback_auth.pairing_status()))
+}
+
+pub async fn start_playback_pairing(
+    State(state): State<AppState>,
+) -> Result<Json<crate::auth::PlaybackStatus>, ApiError> {
+    let status = state
+        .playback_auth
+        .start_pairing()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to start playback pairing: {}", e)))?;
+    Ok(Json(status))
+}
+
+pub async fn playback_unpair(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.playback_auth.clear().await.map_err(ApiError::from)?;
+    Ok(Json(serde_json::json!({})))
+}
+
+pub async fn list_cards(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::web::db::CardMapping>>, ApiError> {
     let mappings = state.db.get_all_mappings().await?;
     Ok(Json(mappings))
 }
@@ -193,7 +229,12 @@ pub async fn add_card(
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     state
         .db
-        .add_card_mapping(&body.card_id, &body.playlist_uri, body.playlist_name.as_deref(), body.is_audiobook)
+        .add_card_mapping(
+            &body.card_id,
+            &body.playlist_uri,
+            body.playlist_name.as_deref(),
+            body.is_audiobook,
+        )
         .await
         .map_err(ApiError::from)?;
     Ok((StatusCode::CREATED, Json(serde_json::json!({}))))
@@ -214,10 +255,8 @@ pub async fn delete_card(
 pub async fn get_playlists(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<crate::web::spotify_api::PlaylistInfo>>, ApiError> {
-    let playlists = with_spotify_token(&state, |api, token| {
-        Box::pin(api.get_user_playlists(token))
-    })
-    .await?;
+    let playlists =
+        with_spotify_token(&state, |api, token| Box::pin(api.get_user_playlists(token))).await?;
 
     let uri_to_name: std::collections::HashMap<String, String> = playlists
         .iter()
@@ -278,9 +317,7 @@ pub struct StateResponse {
 pub async fn get_state(State(state): State<AppState>) -> Result<Json<StateResponse>, ApiError> {
     let (is_playing, current_card, context_uri) = state
         .state_manager
-        .with_state(|s| {
-            (s.is_playing, s.current_id.clone(), s.context_uri.clone())
-        })
+        .with_state(|s| (s.is_playing, s.current_id.clone(), s.context_uri.clone()))
         .map_err(ApiError::from)?;
     Ok(Json(StateResponse {
         is_playing,

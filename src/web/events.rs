@@ -32,9 +32,7 @@ pub enum WebEvent {
         context_uri: Option<String>,
     },
     /// Emitted when the volume is changed
-    VolumeChanged {
-        volume: u8,
-    },
+    VolumeChanged { volume: u8 },
     /// Sent when the WebSocket receiver lagged behind and may have missed events.
     /// Frontend should refresh state from the REST API.
     #[allow(dead_code)]

@@ -7,7 +7,7 @@ pub use db::Db;
 pub use events::{PlayerCommand, WebEvent};
 pub use spotify_api::SpotifyApi;
 
-use crate::auth::AuthManager;
+use crate::auth::{AuthManager, PlaybackAuth};
 use crate::state::StateManager;
 use axum::{
     extract::{
@@ -35,6 +35,7 @@ const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 pub struct AppState {
     pub db: Arc<Db>,
     pub auth_manager: Arc<AuthManager>,
+    pub playback_auth: Arc<PlaybackAuth>,
     pub spotify_api: SpotifyApi,
     pub event_tx: broadcast::Sender<WebEvent>,
     pub player_cmd_tx: mpsc::Sender<PlayerCommand>,
@@ -50,6 +51,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/auth/callback", get(api::auth_callback))
         .route("/auth/status", get(api::get_auth_status))
         .route("/auth/logout", post(api::auth_logout))
+        .route("/playback/status", get(api::get_playback_status))
+        .route("/playback/pair", post(api::start_playback_pairing))
+        .route("/playback/unpair", post(api::playback_unpair))
         .route("/cards", get(api::list_cards).post(api::add_card))
         .route("/cards/:id", axum::routing::delete(api::delete_card))
         .route("/playlists", get(api::get_playlists))
@@ -96,11 +100,7 @@ async fn static_handler(uri: Uri) -> Response {
         }
         None => {
             if path.contains('.') {
-                return (
-                    StatusCode::NOT_FOUND,
-                    "404 Not Found",
-                )
-                    .into_response();
+                return (StatusCode::NOT_FOUND, "404 Not Found").into_response();
             }
             index_html().await
         }

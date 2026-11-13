@@ -115,7 +115,10 @@ impl SpotifyApi {
         Self { http_client }
     }
 
-    pub async fn get_user_playlists(&self, access_token: &str) -> Result<Vec<PlaylistInfo>, SpotifyApiError> {
+    pub async fn get_user_playlists(
+        &self,
+        access_token: &str,
+    ) -> Result<Vec<PlaylistInfo>, SpotifyApiError> {
         let response = self
             .http_client
             .get(format!("{}{}", API_BASE, "/me/playlists?limit=50"))
@@ -140,37 +143,53 @@ impl SpotifyApi {
             let status = response.status();
             // unwrap_or_default: only for the error message body, not the success path
             let body = response.text().await.unwrap_or_default();
-            return Err(SpotifyApiError::HttpError(format!("Spotify API error ({}): {}", status, body)));
+            return Err(SpotifyApiError::HttpError(format!(
+                "Spotify API error ({}): {}",
+                status, body
+            )));
         }
 
-        let parsed: PlaylistsResponse = response
-            .json()
-            .await
-            .map_err(|e| SpotifyApiError::ParseError(format!("Failed to parse playlists: {}", e)))?;
+        let parsed: PlaylistsResponse = response.json().await.map_err(|e| {
+            SpotifyApiError::ParseError(format!("Failed to parse playlists: {}", e))
+        })?;
 
-        let playlists = parsed.items.into_iter().map(|item| {
-            let images: Vec<String> = item.images.into_iter().map(|img| img.url).filter(|u| !u.is_empty()).collect();
-            PlaylistInfo {
-                id: item.id,
-                uri: item.uri,
-                name: item.name.unwrap_or_default(),
-                images,
-                owner: item.owner.display_name,
-                track_count: item.tracks.total as u32,
-            }
-        }).collect();
+        let playlists = parsed
+            .items
+            .into_iter()
+            .map(|item| {
+                let images: Vec<String> = item
+                    .images
+                    .into_iter()
+                    .map(|img| img.url)
+                    .filter(|u| !u.is_empty())
+                    .collect();
+                PlaylistInfo {
+                    id: item.id,
+                    uri: item.uri,
+                    name: item.name.unwrap_or_default(),
+                    images,
+                    owner: item.owner.display_name,
+                    track_count: item.tracks.total as u32,
+                }
+            })
+            .collect();
 
         Ok(playlists)
     }
 
-    pub async fn get_currently_playing(&self, access_token: &str) -> Result<Option<CurrentlyPlaying>, SpotifyApiError> {
+    pub async fn get_currently_playing(
+        &self,
+        access_token: &str,
+    ) -> Result<Option<CurrentlyPlaying>, SpotifyApiError> {
         let response = self
             .http_client
             .get(format!("{}{}", API_BASE, "/me/player/currently-playing"))
             .bearer_auth(access_token)
             .send()
             .await
-            .map_err(|e| SpotifyApiError::Other(format!("Failed to fetch currently playing: {}", e)))?;
+            .map_err(|e| {
+                SpotifyApiError::Other(format!("Failed to fetch currently playing: {}", e))
+            })?;
 
         if response.status() == reqwest::StatusCode::NO_CONTENT {
             return Ok(None);
@@ -188,18 +207,29 @@ impl SpotifyApi {
             let status = response.status();
             // unwrap_or_default: only for the error message body, not the success path
             let body = response.text().await.unwrap_or_default();
-            return Err(SpotifyApiError::HttpError(format!("Spotify API error ({}): {}", status, body)));
+            return Err(SpotifyApiError::HttpError(format!(
+                "Spotify API error ({}): {}",
+                status, body
+            )));
         }
 
-        let parsed: CurrentlyPlayingResponse = response
-            .json()
-            .await
-            .map_err(|e| SpotifyApiError::ParseError(format!("Failed to parse currently playing: {}", e)))?;
+        let parsed: CurrentlyPlayingResponse = response.json().await.map_err(|e| {
+            SpotifyApiError::ParseError(format!("Failed to parse currently playing: {}", e))
+        })?;
 
         match parsed.item {
             Some(item) => {
-                let artist = item.artists.first().map(|a| a.name.clone()).unwrap_or_default();
-                let album_art = item.album.images.first().map(|img| img.url.clone()).filter(|u| !u.is_empty());
+                let artist = item
+                    .artists
+                    .first()
+                    .map(|a| a.name.clone())
+                    .unwrap_or_default();
+                let album_art = item
+                    .album
+                    .images
+                    .first()
+                    .map(|img| img.url.clone())
+                    .filter(|u| !u.is_empty());
                 Ok(Some(CurrentlyPlaying {
                     track_name: item.name,
                     artist,

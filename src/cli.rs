@@ -11,7 +11,9 @@ use crate::web::Db;
 pub async fn load_config() -> Result<TurnyConfig> {
     if let Ok(config) = TurnyConfig::from_file("config.toml").await {
         info!("Loaded configuration from config.toml");
-        config.validate().context("Invalid configuration in config.toml")?;
+        config
+            .validate()
+            .context("Invalid configuration in config.toml")?;
         return Ok(config);
     }
 
@@ -55,7 +57,10 @@ pub async fn handle_auth_command(args: &[String]) -> Result<()> {
 
             let redirect_url = input.trim();
 
-            match auth_manager.authenticate_with_redirect_url(redirect_url).await {
+            match auth_manager
+                .authenticate_with_redirect_url(redirect_url)
+                .await
+            {
                 Ok(_) => println!("Authentication successful!"),
                 Err(e) => println!("Authentication failed: {}", e),
             }
@@ -103,22 +108,20 @@ pub async fn handle_config_command(args: &[String]) -> Result<()> {
             println!("Redirect URI: {}", config.spotify.redirect_uri);
 
             match Db::open("turny.db") {
-                Ok(db) => {
-                    match db.get_all_mappings().await {
-                        Ok(mappings) => {
-                            println!("Card mappings: {} entries", mappings.len());
-                            for m in &mappings {
-                                println!(
-                                    "  {}: {} ({})",
-                                    m.card_id,
-                                    m.playlist_uri,
-                                    m.playlist_name.as_deref().unwrap_or("unnamed")
-                                );
-                            }
+                Ok(db) => match db.get_all_mappings().await {
+                    Ok(mappings) => {
+                        println!("Card mappings: {} entries", mappings.len());
+                        for m in &mappings {
+                            println!(
+                                "  {}: {} ({})",
+                                m.card_id,
+                                m.playlist_uri,
+                                m.playlist_name.as_deref().unwrap_or("unnamed")
+                            );
                         }
-                        Err(e) => println!("Card mappings: failed to read DB: {}", e),
                     }
-                }
+                    Err(e) => println!("Card mappings: failed to read DB: {}", e),
+                },
                 Err(_) => {
                     println!(
                         "Card mappings: {} entries (config only)",
@@ -140,7 +143,8 @@ pub async fn handle_config_command(args: &[String]) -> Result<()> {
             let playlist_uri = args[2].clone();
 
             let db = Db::open("turny.db")?;
-            db.add_card_mapping(&card_id, &playlist_uri, None, false).await?;
+            db.add_card_mapping(&card_id, &playlist_uri, None, false)
+                .await?;
 
             config.add_card_mapping(card_id.clone(), playlist_uri.clone());
             config.save_to_file("config.toml").await?;
@@ -206,7 +210,8 @@ pub async fn handle_cards_command(args: &[String]) -> Result<()> {
             let playlist_uri = args[2].clone();
 
             let db = Db::open("turny.db")?;
-            db.add_card_mapping(&card_id, &playlist_uri, None, false).await?;
+            db.add_card_mapping(&card_id, &playlist_uri, None, false)
+                .await?;
 
             let mut config = load_config().await?;
             config.add_card_mapping(card_id.clone(), playlist_uri.clone());
@@ -308,9 +313,7 @@ pub async fn handle_spotify_command(args: &[String]) -> Result<()> {
                     println!("Spotify commands:");
                     println!("  status  - Show Spotify Connect status");
                     println!();
-                    println!(
-                        "Note: Advanced Spotify controls are handled by the main application"
-                    );
+                    println!("Note: Advanced Spotify controls are handled by the main application");
                     println!("when running in hardware mode with RFID cards and buttons.");
                 }
             }

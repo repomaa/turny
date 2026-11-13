@@ -15,7 +15,7 @@ mod state;
 mod web;
 
 use app::TurnyApp;
-use auth::AuthManager;
+use auth::{AuthManager, PlaybackAuth};
 use config::TurnyConfig;
 use state::StateManager;
 use tokio::sync::{broadcast, mpsc};
@@ -87,17 +87,20 @@ async fn run_hardware_mode() -> Result<()> {
     // Initialize Spotify services
     if app.is_authenticated()? {
         if let Err(e) = app.initialize_spotify().await {
-            error!("Failed to initialize Spotify services: {}", e);
+            // `{:#}` prints the full anyhow error chain.
+            error!("Failed to initialize Spotify services: {:#}", e);
         }
     }
 
     // Get shared state for web server
     let auth_manager = app.get_auth_manager();
+    let playback_auth = app.get_playback_auth();
     let state_manager = app.get_state_manager();
 
     let web_state = build_app_state(
         db,
         auth_manager,
+        playback_auth,
         &config,
         event_tx,
         player_cmd_tx,
@@ -142,13 +145,18 @@ async fn run_web_mode() -> Result<()> {
     let db = Arc::new(web::Db::open("turny.db")?);
     db.migrate_from_config(&config.playlists).await?;
 
-    let auth_manager = Arc::new(AuthManager::new(
-        config.spotify.client_id.clone(),
-        config.spotify.client_secret.clone(),
-        config.spotify.redirect_uri.clone(),
-        config.advanced.scopes.clone(),
-        Some(db.clone()),
-    ).await);
+    let auth_manager = Arc::new(
+        AuthManager::new(
+            config.spotify.client_id.clone(),
+            config.spotify.client_secret.clone(),
+            config.spotify.redirect_uri.clone(),
+            config.advanced.scopes.clone(),
+            Some(db.clone()),
+        )
+        .await,
+    );
+
+    let playback_auth = Arc::new(PlaybackAuth::new(Some(db.clone())).await);
 
     let state_manager = StateManager::new();
     let (event_tx, _) = broadcast::channel::<web::WebEvent>(EVENT_CHANNEL_CAPACITY);
@@ -157,6 +165,7 @@ async fn run_web_mode() -> Result<()> {
     let web_state = build_app_state(
         db,
         auth_manager,
+        playback_auth,
         &config,
         event_tx,
         player_cmd_tx,
@@ -178,6 +187,7 @@ async fn run_web_mode() -> Result<()> {
 fn build_app_state(
     db: Arc<web::Db>,
     auth_manager: Arc<AuthManager>,
+    playback_auth: Arc<PlaybackAuth>,
     config: &TurnyConfig,
     event_tx: broadcast::Sender<web::WebEvent>,
     player_cmd_tx: mpsc::Sender<web::PlayerCommand>,
@@ -186,6 +196,7 @@ fn build_app_state(
     web::AppState {
         db,
         auth_manager,
+        playback_auth,
         spotify_api: web::SpotifyApi::new(),
         event_tx,
         player_cmd_tx,

@@ -50,7 +50,12 @@ impl TurnyState {
     }
 
     /// Set the current card, context, and audiobook flag.
-    pub fn set_current_card_with_audiobook(&mut self, card_id: String, context_uri: String, is_audiobook: bool) {
+    pub fn set_current_card_with_audiobook(
+        &mut self,
+        card_id: String,
+        context_uri: String,
+        is_audiobook: bool,
+    ) {
         self.current_id = Some(card_id);
         self.context_uri = Some(context_uri);
         self.absence_count = 0;
@@ -108,9 +113,10 @@ impl StateManager {
     where
         F: FnOnce(&TurnyState) -> T,
     {
-        let state = self.state.lock().map_err(|e| {
-            anyhow::anyhow!("Failed to acquire state lock for reading: {}", e)
-        })?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire state lock for reading: {}", e))?;
         Ok(f(&*state))
     }
 
@@ -119,9 +125,10 @@ impl StateManager {
     where
         F: FnOnce(&mut TurnyState) -> T,
     {
-        let mut state = self.state.lock().map_err(|e| {
-            anyhow::anyhow!("Failed to acquire state lock for writing: {}", e)
-        })?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire state lock for writing: {}", e))?;
         Ok(f(&mut *state))
     }
 
@@ -141,11 +148,19 @@ impl StateManager {
     }
 
     /// Set the current card, context, and audiobook flag
-    pub fn set_current_card_with_audiobook(&self, card_id: String, context_uri: String, is_audiobook: bool) {
+    pub fn set_current_card_with_audiobook(
+        &self,
+        card_id: String,
+        context_uri: String,
+        is_audiobook: bool,
+    ) {
         if let Err(e) = self.with_state_mut(|state| {
             state.set_current_card_with_audiobook(card_id, context_uri, is_audiobook)
         }) {
-            error!("StateManager lock failed in set_current_card_with_audiobook: {}", e);
+            error!(
+                "StateManager lock failed in set_current_card_with_audiobook: {}",
+                e
+            );
         }
     }
 

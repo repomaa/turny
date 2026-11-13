@@ -1,21 +1,18 @@
 use anyhow::{Context, Result};
-use librespot::core::{
-    authentication::Credentials,
-    config::SessionConfig,
-    session::Session,
-    spotify_uri::SpotifyUri,
-};
 use librespot::connect::{
-    LoadContextOptions, LoadRequest, LoadRequestOptions, Options, PlayingTrack,
-    ConnectConfig, Spirc,
+    ConnectConfig, LoadContextOptions, LoadRequest, LoadRequestOptions, Options, PlayingTrack,
+    Spirc,
+};
+use librespot::core::{
+    authentication::Credentials, config::SessionConfig, session::Session, spotify_uri::SpotifyUri,
 };
 use librespot::discovery::DeviceType;
-use librespot::metadata::{Playlist, Metadata};
+use librespot::metadata::{Metadata, Playlist};
 use librespot::playback::{
     audio_backend,
-    config::{AudioFormat, PlayerConfig, Bitrate},
-    player::Player,
+    config::{AudioFormat, Bitrate, PlayerConfig},
     mixer,
+    player::Player,
 };
 use log::{info, warn};
 
@@ -45,10 +42,7 @@ impl SpotifyConnect {
         }
     }
 
-    pub async fn initialize_with_token(
-        &mut self,
-        access_token: String,
-    ) -> Result<()> {
+    pub async fn initialize_with_token(&mut self, access_token: String) -> Result<()> {
         self.access_token = Some(access_token);
         self.initialize().await
     }
@@ -80,10 +74,8 @@ impl SpotifyConnect {
 
         let audio_format = AudioFormat::default();
 
-        let mixer_builder =
-            mixer::find(Some("softvol")).context("Failed to find softvol mixer")?;
-        let mixer = mixer_builder(MixerConfig::default())
-            .context("Failed to create mixer")?;
+        let mixer_builder = mixer::find(Some("softvol")).context("Failed to find softvol mixer")?;
+        let mixer = mixer_builder(MixerConfig::default()).context("Failed to create mixer")?;
 
         let player = Player::new(
             player_config,
@@ -100,15 +92,10 @@ impl SpotifyConnect {
             ..Default::default()
         };
 
-        let (spirc, spirc_task) = Spirc::new(
-            connect_config,
-            session.clone(),
-            credentials,
-            player,
-            mixer,
-        )
-        .await
-        .context("Failed to create Spirc")?;
+        let (spirc, spirc_task) =
+            Spirc::new(connect_config, session.clone(), credentials, player, mixer)
+                .await
+                .context("Failed to create Spirc")?;
 
         self.session = Some(session);
         self.spirc = Some(spirc);
@@ -153,7 +140,10 @@ impl SpotifyConnect {
     ///
     /// When the session is `None` (never initialized), this returns false.
     pub fn is_initialized(&self) -> bool {
-        self.session.as_ref().map(|s| !s.is_invalid()).unwrap_or(false)
+        self.session
+            .as_ref()
+            .map(|s| !s.is_invalid())
+            .unwrap_or(false)
     }
 
     /// Returns true only when the session exists BUT has become invalid
@@ -165,7 +155,10 @@ impl SpotifyConnect {
     /// re-initializing. A session that was never created needs neither
     /// cleanup nor re-init detection — it simply needs initialization.
     pub fn needs_reinit(&self) -> bool {
-        self.session.as_ref().map(|s| s.is_invalid()).unwrap_or(false)
+        self.session
+            .as_ref()
+            .map(|s| s.is_invalid())
+            .unwrap_or(false)
     }
 
     /// Sets the initial volume (0–65535) used when the next session is created.
@@ -176,14 +169,17 @@ impl SpotifyConnect {
     /// Sets the playback volume as a percentage (0–100) of the full u16 range.
     pub fn set_volume(&self, volume_pct: u8) -> Result<()> {
         let spirc = self.spirc.as_ref().context("Spirc not initialized")?;
-        spirc.set_volume(pct_to_librespot_volume(volume_pct)).context("Failed to set volume")
+        spirc
+            .set_volume(pct_to_librespot_volume(volume_pct))
+            .context("Failed to set volume")
     }
 
     /// Loads and starts playing a playlist identified by its Spotify URI.
     /// Uses repeat mode (loops the playlist).
     #[allow(dead_code)]
     pub async fn load_track(&self, playlist_uri: &str) -> Result<()> {
-        self.load_track_with_options(playlist_uri, true, 0, None).await
+        self.load_track_with_options(playlist_uri, true, 0, None)
+            .await
     }
 
     /// Loads and starts playing a playlist with fine-grained control.
@@ -200,18 +196,11 @@ impl SpotifyConnect {
         seek_to: u32,
         playing_track: Option<String>,
     ) -> Result<()> {
-        let spirc = self
-            .spirc
-            .as_ref()
-            .context("Spirc not initialized")?;
+        let spirc = self.spirc.as_ref().context("Spirc not initialized")?;
 
-        let session = self
-            .session
-            .as_ref()
-            .context("Session not available")?;
+        let session = self.session.as_ref().context("Session not available")?;
 
-        let uri = SpotifyUri::from_uri(playlist_uri)
-            .context("Invalid playlist URI")?;
+        let uri = SpotifyUri::from_uri(playlist_uri).context("Invalid playlist URI")?;
 
         let playlist = Playlist::get(session, &uri)
             .await
@@ -237,7 +226,9 @@ impl SpotifyConnect {
         );
 
         spirc.activate().context("Failed to activate Spirc")?;
-        spirc.load(request).context("Failed to load playlist via Spirc")?;
+        spirc
+            .load(request)
+            .context("Failed to load playlist via Spirc")?;
 
         info!(
             "Loaded playlist via Spirc: {} ({} tracks){}",
@@ -251,7 +242,8 @@ impl SpotifyConnect {
     /// Reloads the current playlist from the first track.
     /// Used for the "return to first track" button action.
     pub async fn restart_playlist(&self, playlist_uri: &str) -> Result<()> {
-        self.load_track_with_options(playlist_uri, true, 0, None).await
+        self.load_track_with_options(playlist_uri, true, 0, None)
+            .await
     }
 
     /// Sends a play command to the active Spirc session.
@@ -280,10 +272,7 @@ impl SpotifyConnect {
 
     /// Convenience method that stops the Spotify Connect service and then
     /// re-initializes it with the given access token.
-    pub async fn restart_with_token(
-        &mut self,
-        access_token: String,
-    ) -> Result<()> {
+    pub async fn restart_with_token(&mut self, access_token: String) -> Result<()> {
         self.stop_and_wait().await?;
         self.initialize_with_token(access_token).await
     }

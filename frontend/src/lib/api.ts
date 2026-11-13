@@ -2,6 +2,7 @@ import type {
 	AuthUrlResponse,
 	AuthStatus,
 	Card,
+	PlaybackStatus,
 	Playlist,
 	NowPlaying,
 	Volume
@@ -27,6 +28,18 @@ export function getAuthStatus(): Promise<AuthStatus> {
 
 export function logout(): Promise<void> {
 	return request('/api/auth/logout', { method: 'POST' }).then(() => undefined);
+}
+
+export function getPlaybackStatus(): Promise<PlaybackStatus> {
+	return request<PlaybackStatus>('/api/playback/status');
+}
+
+export function startPlaybackPairing(): Promise<PlaybackStatus> {
+	return request<PlaybackStatus>('/api/playback/pair', { method: 'POST' });
+}
+
+export function unpairPlayback(): Promise<void> {
+	return request('/api/playback/unpair', { method: 'POST' }).then(() => undefined);
 }
 
 export function getCards(): Promise<Card[]> {
